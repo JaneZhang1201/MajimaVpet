@@ -1,0 +1,4 @@
+#!/bin/sh
+# 启动 Majima 桌宠（用 program/venv 里的 Python）
+DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+"$DIR/program/venv/bin/python" "$DIR/program/vpet_mac.py"
