@@ -1,6 +1,6 @@
 # MajimaVpet
 
-A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders when you're still, dances when you move the mouse, and reacts when you pick him up.
+A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders when you're still, dances when you move the mouse, chats along while you type, and reacts when you pick him up.
 
 <p>
   <img src="majima-idle.gif" alt="idle" width="80">
@@ -9,6 +9,7 @@ A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders w
   <img src="majima-confuse.gif" alt="confuse" width="80">
   <img src="majima-change.gif" alt="change" width="80">
   <img src="majima-dance.gif" alt="dance" width="80">
+  <img src="majima-typing.gif" alt="typing" width="160">
 </p>
 
 ## Behaviour
@@ -18,6 +19,7 @@ A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders w
 | **Steady** | idle, walk | Cursor still for 1.5s: idles and takes short walks (20–40px) in any direction, bouncing off screen edges |
 | **Interactive** | shock → confuse | Drag him anywhere on screen: "!" while held, "?" after you drop him |
 | **Showtime** | change → dance | Cursor moving: sparkle entrance, then dances until the cursor stops |
+| **Typing** | typing | Keyboard in use: a speech bubble fills with "…" until you stop typing (0.5s) |
 
 The pet window floats above other windows, appears on every Space, and lets clicks through its transparent areas.
 
@@ -59,11 +61,12 @@ Settings at the top of `program/vpet_mac.py`:
 | `walk_speed` | `1` | Pixels per tick while walking |
 | `walk_loops` | `(1, 2)` | Walk cycles per stroll (~20px each) |
 | `dropped_loops` | `2` | Times the "?" plays after a drop |
+| `typing_after` | `0.5` | Seconds after the last key press that still count as typing |
 
 ## Project layout
 
 ```
 MajimaVpet.app/        macOS launcher bundle (runs program/vpet_mac.py with the venv)
 program/vpet_mac.py    the pet: Cocoa window, animation state machine, menu bar item
-majima-*.gif           sprite animations (80×92)
+majima-*.gif           sprite animations (80×92; typing is 160×92)
 ```
