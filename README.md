@@ -21,7 +21,7 @@ A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders w
 | **Showtime** | change → dance | Cursor moving: sparkle entrance, then dances until the cursor stops |
 | **Typing** | typing | Keyboard in use: a speech bubble fills with "…" until you stop typing (0.5s) |
 
-The pet window floats above other windows, appears on every Space, and lets clicks through its transparent areas.
+The pet window floats above other windows and stays in the same spot on every desktop (Space), including full-screen apps and Mission Control. Clicks pass through its transparent areas.
 
 ## Menu bar
 

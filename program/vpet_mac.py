@@ -269,9 +269,15 @@ window.setTitle_("MajimaVpet")
 window.setOpaque_(False)
 window.setBackgroundColor_(AppKit.NSColor.clearColor())
 window.setHasShadow_(False)
-window.setLevel_(AppKit.NSFloatingWindowLevel)
+window.setLevel_(AppKit.NSStatusWindowLevel)  # 比普通窗口和浮动面板都高
 window.setIgnoresMouseEvents_(False)
-window.setCollectionBehavior_(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces)
+# 在所有桌面（Space）同一位置显示，切换桌面 / 调度中心 / 全屏 App 时都不消失
+window.setCollectionBehavior_(
+    AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces     # 每个桌面都显示
+    | AppKit.NSWindowCollectionBehaviorStationary         # 调度中心、显示桌面时不被移走
+    | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary  # 全屏 App 上方也能显示
+    | AppKit.NSWindowCollectionBehaviorIgnoresCycle       # 不参与 ⌘` 窗口切换
+)
 
 # 用 layer 显示图片，最近邻缩放保持像素清晰
 view = PetView.alloc().initWithFrame_(((0, 0), (width, height)))
