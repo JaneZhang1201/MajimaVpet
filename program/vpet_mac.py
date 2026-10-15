@@ -22,8 +22,10 @@ impath = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'  # GI
 scale = 1  # 放大倍数（像素风格不会模糊）
 
 tick = 0.05             # 主循环间隔（秒）
+idle_tick = 0.5         # 暂停或隐藏时的检查间隔（秒），省电
 still_after = 1.5       # 鼠标静止多少秒后停止表演、回到平稳
 walk_speed = 1          # 每个 tick 走多少像素（任意方向）
+walk_move_every = 2     # 走路时每隔几个 tick 才真正移动一次窗口（移动窗口比换帧贵）
 walk_loops = (1, 2)     # 每次散步播放几遍走路动画（每遍约 20 像素）
 dropped_loops = 2       # 放下后 "?" 动画播放几遍
 typing_after = 0.5      # 最后一次按键后多少秒内算"正在打字"（太小会在两次按键之间闪烁）
@@ -92,6 +94,8 @@ frame_time = 0.0     # 当前帧已显示的时间
 loops_left = 1       # 当前动画还要播放几遍
 walk_vec = (0, 0)    # 每个 tick 的位移 (dx, dy)
 pos = [0.0, 0.0]     # 窗口位置（浮点，斜着走时不会被取整吃掉）
+shown_pos = None     # 窗口实际所在的整数像素位置
+ticks = 0            # 主循环计数
 paused = False
 last_mouse = AppKit.NSEvent.mouseLocation()
 last_move = time.monotonic()
@@ -127,9 +131,14 @@ def random_direction():
     angle = random.uniform(0, 2 * math.pi)
     return (math.cos(angle) * walk_speed, math.sin(angle) * walk_speed)
 
-def move_to(x, y):
+# 更新位置；只有落到新的整数像素上时才真正移动窗口（apply=False 时只记录，稍后再移动）
+def move_to(x, y, apply=True):
+    global shown_pos
     pos[0], pos[1] = x, y
-    window.setFrameOrigin_((x, y))
+    target = (round(x), round(y))
+    if apply and target != shown_pos:
+        shown_pos = target
+        window.setFrameOrigin_(target)
 
 # 当前动画播完后，根据模式决定下一个动画
 def next_anim():
@@ -176,10 +185,12 @@ def clamp_origin(x, y, area):
 
 # 主循环：检测鼠标、推进动画帧、走路
 def update():
-    global mode, last_mouse, last_move, frame, frame_time, loops_left, walk_vec
-    AppHelper.callLater(tick, update)
-    if paused:
+    global mode, last_mouse, last_move, frame, frame_time, loops_left, walk_vec, ticks
+    if paused or not window.isVisible():
+        AppHelper.callLater(idle_tick, update)  # 看不到变化时降低频率，几乎不占 CPU
         return
+    AppHelper.callLater(tick, update)
+    ticks += 1
 
     if mode in ('steady', 'showtime') and keyboard_typing():
         mode = 'typing'
@@ -207,7 +218,7 @@ def update():
         if y != pos[1] + dy:
             dy = -dy
         walk_vec = (dx, dy)
-        move_to(x, y)
+        move_to(x, y, apply=ticks % walk_move_every == 0)
 
     frames, delays, _ = anims[anim]
     frame_time += tick

@@ -62,6 +62,8 @@ Settings at the top of `program/vpet_mac.py`:
 | `walk_loops` | `(1, 2)` | Walk cycles per stroll (~20px each) |
 | `dropped_loops` | `2` | Times the "?" plays after a drop |
 | `typing_after` | `0.5` | Seconds after the last key press that still count as typing |
+| `idle_tick` | `0.5` | Loop interval while paused or hidden (saves CPU) |
+| `walk_move_every` | `2` | Move the window every N ticks while walking (moving a window costs more than changing frames) |
 
 ## Project layout
 
