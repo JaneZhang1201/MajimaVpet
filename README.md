@@ -10,6 +10,7 @@ A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders w
   <img src="majima-change.gif" alt="change" width="80">
   <img src="majima-dance.gif" alt="dance" width="80">
   <img src="majima-typing.gif" alt="typing" width="160">
+  <img src="majima-notetake.gif" alt="notetake" width="160">
 </p>
 
 ## Behaviour
@@ -20,13 +21,32 @@ A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders w
 | **Interactive** | shock → confuse | Drag him anywhere on screen: "!" while held, "?" after you drop him |
 | **Showtime** | change → dance | Cursor moving: sparkle entrance, then dances until the cursor stops |
 | **Typing** | typing | Keyboard in use: a speech bubble fills with "…" until you stop typing (0.5s) |
+| **Notes** | notetake | Double-click Majima: he stops and gets ready to take a note (see below) |
 
 The pet window floats above other windows and stays in the same spot on every desktop (Space), including full-screen apps and Mission Control. Clicks pass through its transparent areas.
+
+## Notebook
+
+Jot down words you meet while reading:
+
+1. **Double-click** Majima. He stops where he is and switches to note-taking.
+2. **Click him again** within 10 seconds to open a notebook page above him: yellow paper with ruled lines. If you don't, he goes back to normal.
+3. Write the word or note (**⌥↩** starts a new line, for example for its meaning) and choose:
+   - **Save** (Enter): kept in your notebook, with the time and labels recorded automatically. Add `#labels` anywhere in the text.
+   - **Quick**: shown as a yellow sticky until you close it. It isn't stored, but its **Save** button keeps it after all.
+   - **Esc**: discard.
+
+While you write, Majima plays his typing animation as if he's taking dictation. Majima and the notebook move together: drag either one and the other follows. Focus goes back to the app you were reading.
+
+To read your notes, choose **Notebook…** from the menu bar icon. Notes are listed newest first; you can search them (English or Chinese), filter by label, read the full note on the right, and delete it.
+
+Notes are stored only on your Mac, in `~/Library/Application Support/MajimaVpet/notes.db` (SQLite, with full-text search that also works for Chinese), and never in this repository.
 
 ## Menu bar
 
 Click the little Majima icon in the menu bar:
 
+- **Notebook…** (⌘B): browse, search and delete saved notes
 - **Hide / Show Majima** (⌘H)
 - **Pause / Resume** (⌘P): freezes the animation
 - **Quit MajimaVpet** (⌘Q)
@@ -62,6 +82,8 @@ Settings at the top of `program/vpet_mac.py`:
 | `walk_loops` | `(1, 2)` | Walk cycles per stroll (~20px each) |
 | `dropped_loops` | `2` | Times the "?" plays after a drop |
 | `typing_after` | `0.5` | Seconds after the last key press that still count as typing |
+| `notetake_timeout` | `10.0` | Seconds to click Majima again after double-clicking, before he goes back to normal |
+| `drag_threshold` | `3` | Pixels the mouse must move before a press becomes a drag |
 | `idle_tick` | `0.5` | Loop interval while paused or hidden (saves CPU) |
 | `walk_move_every` | `2` | Move the window every N ticks while walking (moving a window costs more than changing frames) |
 
@@ -69,6 +91,7 @@ Settings at the top of `program/vpet_mac.py`:
 
 ```
 MajimaVpet.app/        macOS launcher bundle (runs program/vpet_mac.py with the venv)
-program/vpet_mac.py    the pet: Cocoa window, animation state machine, menu bar item
-majima-*.gif           sprite animations (80×92; typing is 160×92)
+program/vpet_mac.py    the pet: Cocoa window, animation state machine, menu bar item, note box, Notebook window
+program/notes_store.py notebook storage (SQLite: notes, labels, full-text search)
+majima-*.gif           sprite animations (80×92; typing and notetake are 160×92)
 ```
