@@ -9,6 +9,9 @@ A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders w
   <img src="majima-confuse.gif" alt="confuse" width="80">
   <img src="majima-change.gif" alt="change" width="80">
   <img src="majima-dance.gif" alt="dance" width="80">
+</p>
+
+<p>
   <img src="majima-typing.gif" alt="typing" width="160">
   <img src="majima-notetake.gif" alt="notetake" width="160">
 </p>
