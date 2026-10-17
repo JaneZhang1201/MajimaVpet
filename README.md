@@ -54,11 +54,11 @@ The pet window floats above other windows and stays in the same spot on every de
 
 | To… | Do this |
 |---|---|
-| Delete | Notebook → select a note → **Delete** → moved to Recently Deleted |
-| Recover | Label menu → **Recently Deleted** → select the note → **Restore** |
-| Erase one now | Recently Deleted → select the note → **Delete Forever** (cannot be undone) |
-| Erase all now | Recently Deleted → **Empty Recently Deleted** (cannot be undone) |
-| Erase automatically | Left in Recently Deleted for 30 days (change with `trash_days`) |
+| Delete | Select a note in the Notebook window and click **Delete**. It moves to Recently Deleted. |
+| Recover | Choose **Recently Deleted** in the label menu, select the note and click **Restore**. |
+| Erase one now | In Recently Deleted, select the note and click **Delete Forever**. This cannot be undone. |
+| Erase all now | In Recently Deleted, click **Empty Recently Deleted**. This cannot be undone. |
+| Erase automatically | Notes left in Recently Deleted for 30 days are erased for you. Change `trash_days` to adjust. |
 
 ### Where they are saved
 
@@ -69,10 +69,10 @@ The pet window floats above other windows and stays in the same spot on every de
 
 | To… | Do this |
 |---|---|
-| Back up | Time Machine (automatic), or quit Majima → copy `majima.db` somewhere safe |
-| Restore a backup | Quit Majima → put the copy back in the folder → start Majima |
-| Move to a new Mac | Copy `majima.db` to the same folder on the new Mac → start Majima |
-| Read without Majima | Open `majima.db` in any SQLite viewer (e.g. DB Browser for SQLite) |
+| Back up | Time Machine backs the file up automatically. For your own copy, quit Majima and copy `majima.db` somewhere safe. |
+| Restore a backup | Quit Majima, put your copy back in the same folder, then start Majima again. |
+| Move to a new Mac | Copy `majima.db` into the same folder on the new Mac before starting Majima there. |
+| Read without Majima | Open `majima.db` in any SQLite viewer, such as DB Browser for SQLite. |
 
 Upgrading from an older version → `notes.db` is renamed to `majima.db` automatically.
 
