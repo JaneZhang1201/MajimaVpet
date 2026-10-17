@@ -11,6 +11,7 @@ import Quartz
 from Foundation import NSURL, NSArray, NSNumber
 from PyObjCTools import AppHelper
 
+import majima_db
 import notes_store
 
 
@@ -38,6 +39,7 @@ dropped_loops = 2       # 放下后 "?" 动画播放几遍
 typing_after = 0.5      # 最后一次按键后多少秒内算"正在打字"（太小会在两次按键之间闪烁）
 notetake_timeout = 10.0 # 双击后多少秒内没再单击，就回到平常动作
 drag_threshold = 3      # 按住后移动超过几像素才算拖动（否则算点击）
+trash_days = 30         # 删除的笔记在"最近删除"里保留几天，之后自动永久删除
 fixed_on_desktop_switch = True  # 切换桌面时像鼠标一样保持不动（用 macOS 私有接口；失败时自动退回普通行为）
 
 # ---------------- 切换桌面时保持不动 ----------------
@@ -343,7 +345,8 @@ drag_started = False
 drag_offset = (0, 0)
 
 # ---------------- 记笔记：输入框和便利贴 ----------------
-notes_db = notes_store.connect()
+db = majima_db.open_db()  # 共享数据库 majima.db（笔记本、之后的番茄钟各用自己的表）
+notes_store.setup(db)
 note_box = None       # 当前打开的输入框控制器
 stickies = []         # 屏幕上的便利贴（保持引用，避免被回收）
 
@@ -530,7 +533,7 @@ class NoteBox(AppKit.NSObject):
             return
         text = self.paper.string()
         if text.strip():
-            notes_store.add_note(notes_db, text, kind='word')
+            notes_store.add_note(db, text, kind='word')
             notebook.reload()
             self.finish(saved=True)
         else:
@@ -603,7 +606,7 @@ class Sticky(AppKit.NSObject):
         pin_window(self.panel)
 
     def save_(self, sender):
-        notes_store.add_note(notes_db, self.text, kind='word')
+        notes_store.add_note(db, self.text, kind='word')
         notebook.reload()
         self.panel.close()
 
@@ -623,6 +626,8 @@ def label_view(text, frame, size=12, color=None):
     if color is not None:
         v.setTextColor_(color)
     return v
+
+TRASH = 'Recently Deleted'  # 标签菜单里的最后一项（用户标签都以 # 开头，不会重名）
 
 class Notebook(AppKit.NSObject):
     def init(self):
@@ -706,8 +711,11 @@ class Notebook(AppKit.NSObject):
         paper_scroll.setDocumentView_(self.paper)
         detail.addSubview_(paper_scroll)
         self.delete_button = make_button('Delete', ((DW - 92, 8), (80, 30)), self, 'deleteNote:')
-        self.delete_button.setAutoresizingMask_(R.NSViewMinXMargin | R.NSViewMaxYMargin)
-        detail.addSubview_(self.delete_button)
+        self.restore_button = make_button('Restore', ((DW - 232, 8), (92, 30)), self, 'restoreNote:')
+        self.forever_button = make_button('Delete Forever', ((DW - 136, 8), (124, 30)), self, 'deleteForever:')
+        for b in (self.delete_button, self.restore_button, self.forever_button):
+            b.setAutoresizingMask_(R.NSViewMinXMargin | R.NSViewMaxYMargin)
+            detail.addSubview_(b)
         split.addSubview_(detail)
         content.addSubview_(split)
         split.setHoldingPriority_forSubviewAtIndex_(260, 0)  # 窗口变大时，多出来的宽度给右边的笔记
@@ -716,8 +724,12 @@ class Notebook(AppKit.NSObject):
         self.table.sizeLastColumnToFit()
 
         # 底部：数量
-        self.count = label_view('', ((12, 8), (300, 16)), 11, R.NSColor.secondaryLabelColor())
+        self.count = label_view('', ((12, 8), (420, 16)), 11, R.NSColor.secondaryLabelColor())
         content.addSubview_(self.count)
+        self.empty_button = make_button('Empty Recently Deleted', ((W - 212, 1), (200, 28)), self, 'emptyTrash:')
+        self.empty_button.setAutoresizingMask_(R.NSViewMinXMargin | R.NSViewMaxYMargin)
+        content.addSubview_(self.empty_button)
+        self.in_trash = False
 
     # 重新读取数据（搜索、筛选、保存或删除后）
     @objc.python_method
@@ -727,17 +739,32 @@ class Notebook(AppKit.NSObject):
         chosen = self.label_menu.titleOfSelectedItem()
         self.label_menu.removeAllItems()
         self.label_menu.addItemWithTitle_('All labels')
-        for label in notes_store.all_labels(notes_db):
+        for label in notes_store.all_labels(db):
             self.label_menu.addItemWithTitle_('#' + label)
+        self.label_menu.menu().addItem_(AppKit.NSMenuItem.separatorItem())
+        self.label_menu.addItemWithTitle_(TRASH)
+        self.label_menu.lastItem().setImage_(
+            AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_('trash', 'Recently Deleted'))
         if chosen and self.label_menu.itemWithTitle_(chosen) is not None:
             self.label_menu.selectItemWithTitle_(chosen)
         label = self.label_menu.titleOfSelectedItem()
-        label = None if label in (None, 'All labels') else label[1:]
-        self.rows = notes_store.list_notes(notes_db, self.search.stringValue(), label)
+        self.in_trash = label == TRASH
+        label = None if label in (None, 'All labels', TRASH) else label[1:]
+        self.rows = notes_store.list_notes(db, self.search.stringValue(), label, deleted=self.in_trash)
+        self.table.tableColumnWithIdentifier_('date').setTitle_('Deleted' if self.in_trash else 'Date')
         self.table.reloadData()
-        total = len(notes_store.list_notes(notes_db))
-        self.count.setStringValue_(f'{len(self.rows)} of {total} notes' if len(self.rows) != total
-                                   else f'{total} note' + ('' if total == 1 else 's'))
+        total = len(notes_store.list_notes(db, deleted=self.in_trash))
+        noun = 'deleted note' if self.in_trash else 'note'
+        text = f'{len(self.rows)} of {total} {noun}s' if len(self.rows) != total \
+            else f'{total} {noun}' + ('' if total == 1 else 's')
+        if self.in_trash:
+            text += f' · removed for good after {trash_days} days'
+        self.count.setStringValue_(text)
+        self.delete_button.setHidden_(self.in_trash)
+        self.restore_button.setHidden_(not self.in_trash)
+        self.forever_button.setHidden_(not self.in_trash)
+        self.empty_button.setHidden_(not self.in_trash)
+        self.empty_button.setEnabled_(total > 0)
         row = next((i for i, r in enumerate(self.rows) if r[0] == keep_id), 0)
         if self.rows:
             self.table.selectRowIndexes_byExtendingSelection_(AppKit.NSIndexSet.indexSetWithIndex_(row), False)
@@ -748,44 +775,82 @@ class Notebook(AppKit.NSObject):
     def show_detail(self):
         row = self.table.selectedRow()
         if 0 <= row < len(self.rows):
-            note_id, text, created, labels = self.rows[row]
+            note_id, text, created, labels, deleted_at = self.rows[row]
             tags = '  '.join('#' + l for l in (labels or '').split(',') if l)
-            self.header.setStringValue_(fmt_time(created, long=True) + ('   ' + tags if tags else ''))
+            if self.in_trash:
+                ago = notes_store.days_in_trash(deleted_at)
+                when = 'today' if ago == 0 else ('1 day ago' if ago == 1 else f'{ago} days ago')
+                left = max(0, trash_days - ago)
+                self.header.setStringValue_(f'Deleted {when} · {left} day' + ('' if left == 1 else 's')
+                                            + f' left   (written {fmt_time(created)})')
+            else:
+                self.header.setStringValue_(fmt_time(created, long=True) + ('   ' + tags if tags else ''))
             self.paper.textStorage().setAttributedString_(paper_string(text))
-            self.delete_button.setEnabled_(True)
+            for b in (self.delete_button, self.restore_button, self.forever_button):
+                b.setEnabled_(True)
         else:
-            empty = 'No notes yet. Double-click Majima to write one.' if not self.search.stringValue() \
-                and self.label_menu.indexOfSelectedItem() <= 0 else 'No notes match.'
+            if self.in_trash:
+                empty = 'Recently Deleted is empty.' if not self.search.stringValue() else 'No deleted notes match.'
+            elif not self.search.stringValue() and self.label_menu.indexOfSelectedItem() <= 0:
+                empty = 'No notes yet. Double-click Majima to write one.'
+            else:
+                empty = 'No notes match.'
             self.header.setStringValue_(empty)
             self.paper.textStorage().setAttributedString_(paper_string(''))
-            self.delete_button.setEnabled_(False)
+            for b in (self.delete_button, self.restore_button, self.forever_button):
+                b.setEnabled_(False)
 
     def filter_(self, sender):
         self.reload()
 
-    def deleteNote_(self, sender):
+    # 处理选中的笔记，然后选中它下面（或上面）的一条
+    @objc.python_method
+    def act_on_selected(self, action):
         row = self.table.selectedRow()
         if not 0 <= row < len(self.rows):
             return
+        action(self.rows[row][0])
+        next_id = self.rows[row + 1][0] if row + 1 < len(self.rows) else (self.rows[row - 1][0] if row else None)
+        self.reload(keep_id=next_id)
+
+    @objc.python_method
+    def confirm(self, title, info, button):
         alert = AppKit.NSAlert.alloc().init()
-        alert.setMessageText_('Delete this note?')
-        alert.setInformativeText_(self.rows[row][1].split('\n')[0][:80])
-        alert.addButtonWithTitle_('Delete')
+        alert.setMessageText_(title)
+        alert.setInformativeText_(info)
+        alert.addButtonWithTitle_(button)
         alert.addButtonWithTitle_('Cancel')
-        if alert.runModal() == AppKit.NSAlertFirstButtonReturn:
-            notes_store.delete_note(notes_db, self.rows[row][0])
-            next_id = self.rows[row + 1][0] if row + 1 < len(self.rows) else (self.rows[row - 1][0] if row else None)
-            self.reload(keep_id=next_id)
+        return alert.runModal() == AppKit.NSAlertFirstButtonReturn
+
+    def deleteNote_(self, sender):  # 放进"最近删除"，不用确认
+        self.act_on_selected(lambda i: notes_store.delete_note(db, i))
+
+    def restoreNote_(self, sender):
+        self.act_on_selected(lambda i: notes_store.restore_note(db, i))
+
+    def deleteForever_(self, sender):
+        row = self.table.selectedRow()
+        if 0 <= row < len(self.rows) and self.confirm(
+                'Delete this note forever?', self.rows[row][1].split('\n')[0][:80] + '\n\nThis cannot be undone.',
+                'Delete Forever'):
+            self.act_on_selected(lambda i: notes_store.delete_forever(db, [i]))
+
+    def emptyTrash_(self, sender):
+        n = len(notes_store.list_notes(db, deleted=True))
+        if n and self.confirm(f'Delete {n} note' + ('' if n == 1 else 's') + ' forever?',
+                              'Everything in Recently Deleted will be erased. This cannot be undone.', 'Empty'):
+            notes_store.empty_trash(db)
+            self.reload()
 
     # 列表的数据源和选择
     def numberOfRowsInTableView_(self, table):
         return len(self.rows)
 
     def tableView_objectValueForTableColumn_row_(self, table, column, row):
-        note_id, text, created, labels = self.rows[row]
+        note_id, text, created, labels, deleted_at = self.rows[row]
         ident = column.identifier()
         if ident == 'date':
-            return fmt_time(created)
+            return fmt_time(deleted_at if self.in_trash else created)
         if ident == 'note':
             return text.split('\n')[0]
         return ', '.join(l for l in (labels or '').split(',') if l)
@@ -794,6 +859,14 @@ class Notebook(AppKit.NSObject):
         self.show_detail()
 
 notebook = Notebook.alloc().init()
+
+# 每天检查一次：在"最近删除"里放了超过 trash_days 天的笔记永久删除
+def purge_trash():
+    if notes_store.purge_expired(db, trash_days):
+        notebook.reload()
+    AppHelper.callLater(24 * 3600, purge_trash)
+
+purge_trash()
 
 # 创建应用（不在 Dock 显示图标）
 app = AppKit.NSApplication.sharedApplication()
