@@ -1,3 +1,4 @@
+import ctypes
 import datetime
 import math
 import os
@@ -7,10 +8,11 @@ import time
 import AppKit
 import objc
 import Quartz
-from Foundation import NSURL
+from Foundation import NSURL, NSArray, NSNumber
 from PyObjCTools import AppHelper
 
 import notes_store
+
 
 # macOS 版本：系统自带的 Tk 无法在透明窗口中显示图片，所以这里直接用 Cocoa (PyObjC) 绘制
 # 运行：双击 MajimaVpet.app，或 program/venv/bin/python program/vpet_mac.py
@@ -36,6 +38,39 @@ dropped_loops = 2       # 放下后 "?" 动画播放几遍
 typing_after = 0.5      # 最后一次按键后多少秒内算"正在打字"（太小会在两次按键之间闪烁）
 notetake_timeout = 10.0 # 双击后多少秒内没再单击，就回到平常动作
 drag_threshold = 3      # 按住后移动超过几像素才算拖动（否则算点击）
+fixed_on_desktop_switch = True  # 切换桌面时像鼠标一样保持不动（用 macOS 私有接口；失败时自动退回普通行为）
+
+# ---------------- 切换桌面时保持不动 ----------------
+# 普通窗口在切换桌面的动画中都会消失约 1 秒。这里用 SkyLight 私有接口建一个
+# 位于所有桌面之上的"空间"，放进去的窗口切换桌面时像鼠标一样留在原地。
+_fixed_space = None
+if fixed_on_desktop_switch:
+    try:
+        _sl = ctypes.cdll.LoadLibrary('/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight')
+        _sl.SLSMainConnectionID.restype = ctypes.c_int
+        _sl.SLSSpaceCreate.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        _sl.SLSSpaceCreate.restype = ctypes.c_uint64
+        _sl.SLSSpaceSetAbsoluteLevel.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.c_int]
+        _sl.SLSShowSpaces.argtypes = [ctypes.c_int, ctypes.c_void_p]
+        _sl.SLSSpaceAddWindowsAndRemoveFromSpaces.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        _cid = _sl.SLSMainConnectionID()
+        _sid = _sl.SLSSpaceCreate(_cid, 1, 0)
+        _sl.SLSSpaceSetAbsoluteLevel(_cid, _sid, 100)
+        _sl.SLSShowSpaces(_cid, objc.pyobjc_id(NSArray.arrayWithObject_(NSNumber.numberWithUnsignedLongLong_(_sid))))
+        _fixed_space = (_sl, _cid, _sid)
+    except Exception as e:
+        print('fixed desktop space unavailable:', e)
+
+def pin_window(w):
+    """把窗口放进固定空间（窗口显示出来之后调用）"""
+    if _fixed_space is None:
+        return
+    sl, cid, sid = _fixed_space
+    try:
+        ids = NSArray.arrayWithObject_(NSNumber.numberWithInt_(w.windowNumber()))
+        sl.SLSSpaceAddWindowsAndRemoveFromSpaces(cid, sid, objc.pyobjc_id(ids), 7)
+    except Exception as e:
+        print('could not pin window:', e)
 
 # 把图片画进可写的 RGBA 位图，返回 (context, 像素 buffer, 宽, 高)
 def bitmap(img):
@@ -283,9 +318,11 @@ class PetView(AppKit.NSView):
                 mode = 'dragging'
                 play('shock', loops=1)  # 被拎起来："!"（可能改变窗口大小，所以之后再算偏移）
             drag_offset = (mouse.x - pos[0], mouse.y - pos[1])
-        move_to(*clamp_origin(mouse.x - drag_offset[0], mouse.y - drag_offset[1], screen_area(mouse)))
+        x, y = clamp_origin(mouse.x - drag_offset[0], mouse.y - drag_offset[1], screen_area(mouse))
         if mode == 'note' and note_box is not None:
-            note_box.follow_majima()  # 笔记本跟着 Majima 走
+            note_box.move_together(x, y)  # 移动笔记本，Majima 作为子窗口一起走
+        else:
+            move_to(x, y)
 
     def mouseUp_(self, event):
         global mode, notetake_since
@@ -309,7 +346,6 @@ drag_offset = (0, 0)
 notes_db = notes_store.connect()
 note_box = None       # 当前打开的输入框控制器
 stickies = []         # 屏幕上的便利贴（保持引用，避免被回收）
-previous_app = None   # 打开输入框前正在用的 App，关闭后把焦点还给它
 
 def make_button(title, frame, target, action):
     b = AppKit.NSButton.alloc().initWithFrame_(frame)
@@ -345,7 +381,9 @@ def setup_panel(panel, title):
     panel.setHidesOnDeactivate_(False)
     panel.setReleasedWhenClosed_(False)
     panel.setCollectionBehavior_(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
-                                 | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary)
+                                 | AppKit.NSWindowCollectionBehaviorStationary
+                                 | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+                                 | AppKit.NSWindowCollectionBehaviorIgnoresCycle)
     panel.setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameAqua))  # 纸张总用浅色，深色模式下也看得清
     panel.setBackgroundColor_(paper_color)
 
@@ -419,7 +457,8 @@ class NoteBox(AppKit.NSObject):
         h = paper_h + 46
         self.done = False
         self.panel = NotePanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            ((0, 0), (w, h)), AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskUtilityWindow,
+            ((0, 0), (w, h)), AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskUtilityWindow
+            | AppKit.NSWindowStyleMaskNonactivatingPanel,  # 能打字，但不把本 App 切到前台
             AppKit.NSBackingStoreBuffered, False)
         setup_panel(self.panel, "Majima's notebook")
         content = self.panel.contentView()
@@ -443,36 +482,31 @@ class NoteBox(AppKit.NSObject):
         place_above_majima(self.panel)
         o = self.panel.frame().origin
         self.offset = (o.x - pos[0], o.y - pos[1])  # 笔记本相对 Majima 的位置，拖动时保持不变
-        self.last_origin = (o.x, o.y)
-        self.syncing = False
         self.panel.setDelegate_(self)
-        app.activateIgnoringOtherApps_(True)
         self.panel.makeKeyAndOrderFront_(None)
+        pin_window(self.panel)
+        self.panel.addChildWindow_ordered_(window, AppKit.NSWindowAbove)  # Majima 跟着笔记本移动
         self.panel.makeFirstResponder_(self.paper)
 
-    # Majima 被拖动 → 笔记本跟着移动
+    # Majima 是笔记本的子窗口：系统会让他们一起移动，拖笔记本标题栏时也没有延迟。
+    # 拖 Majima 时，把笔记本移到对应位置，Majima 自然跟着走
     @objc.python_method
-    def follow_majima(self):
+    def move_together(self, x, y):
         if self.done:
             return
-        origin = (pos[0] + self.offset[0], pos[1] + self.offset[1])
-        self.syncing = True
-        self.panel.setFrameOrigin_(origin)
-        self.syncing = False
-        o = self.panel.frame().origin  # 系统可能把窗口限制在屏幕内
-        self.last_origin = (o.x, o.y)
+        self.panel.setFrameOrigin_((x + self.offset[0], y + self.offset[1]))
+        self.follow_panel()
 
-    # 笔记本被拖动 → Majima 跟着移动（同时被主循环定时检查，防止漏掉）
+    # 根据 Majima 窗口的实际位置更新 pos（笔记本被拖动后）
     @objc.python_method
     def follow_panel(self):
-        if self.done or self.syncing:
+        global shown_pos
+        if self.done:
             return
-        o = self.panel.frame().origin
-        if (o.x, o.y) == self.last_origin:
-            return
-        self.last_origin = (o.x, o.y)
-        x, y = clamp_origin(o.x - self.offset[0], o.y - self.offset[1], screen_area(o))
-        move_to(x, y)  # Majima 碰到屏幕边缘时停在边缘；笔记本拖回来后他会回到原来的相对位置
+        f = window.frame().origin
+        if (round(f.x), round(f.y)) != shown_pos:
+            pos[0], pos[1] = f.x, f.y
+            shown_pos = (round(f.x), round(f.y))
 
     def windowDidMove_(self, notification):
         self.follow_panel()
@@ -520,8 +554,11 @@ class NoteBox(AppKit.NSObject):
         global mode, note_box, typing_ignore_until
         if self.done:
             return
+        self.follow_panel()
         self.done = True
+        self.panel.removeChildWindow_(window)
         self.panel.orderOut_(None)
+        move_to(*clamp_origin(pos[0], pos[1], screen_area()))
         note_box = None
         typing_ignore_until = time.monotonic() + typing_after + 0.2  # 刚才的按键不算"正在打字"
         mode = 'steady'
@@ -529,15 +566,11 @@ class NoteBox(AppKit.NSObject):
             play('change')  # 闪光：保存成功
         else:
             next_anim()
-        if previous_app is not None:
-            previous_app.activateWithOptions_(0)  # 把焦点还给刚才在用的 App
 
 def open_note_box():
-    global mode, note_box, previous_app
+    global mode, note_box
     mode = 'note'
     play('notetake')
-    front = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
-    previous_app = None if front is None or front.processIdentifier() == os.getpid() else front
     note_box = NoteBox.alloc().init()
     note_box.open()
 
@@ -567,6 +600,7 @@ class Sticky(AppKit.NSObject):
         top = box_frame.origin.y + box_frame.size.height
         self.panel.setFrameTopLeftPoint_((box_frame.origin.x, top))
         self.panel.orderFrontRegardless()
+        pin_window(self.panel)
 
     def save_(self, sender):
         notes_store.add_note(notes_db, self.text, kind='word')
@@ -774,12 +808,16 @@ area = AppKit.NSScreen.mainScreen().visibleFrame()
 start_x = area.origin.x + area.size.width - width - 100
 
 # 无边框、透明、总在最上层的窗口（透明部分点击穿透，角色本身可以拖动）
-window = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+# 用"不激活 App"的面板：点他、在笔记本里打字都不会把本 App 切到前台，
+# 这样切换桌面时系统不会先隐藏再显示他（前台 App 的窗口切桌面时会闪一下）
+window = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
     ((start_x, area.origin.y), (width, height)),
-    AppKit.NSWindowStyleMaskBorderless,
+    AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
     AppKit.NSBackingStoreBuffered,
     False,
 )
+window.setHidesOnDeactivate_(False)
+window.setBecomesKeyOnlyIfNeeded_(True)
 window.setTitle_("MajimaVpet")
 window.setOpaque_(False)
 window.setBackgroundColor_(AppKit.NSColor.clearColor())
@@ -800,6 +838,7 @@ view.setWantsLayer_(True)
 view.layer().setMagnificationFilter_(Quartz.kCAFilterNearest)
 window.setContentView_(view)
 window.orderFrontRegardless()
+pin_window(window)
 move_to(start_x, area.origin.y)
 
 # 菜单栏控制器：显示/隐藏、暂停/继续、退出
@@ -810,6 +849,7 @@ class MenuController(AppKit.NSObject):
             sender.setTitle_("Show Majima")
         else:
             window.orderFrontRegardless()
+            pin_window(window)
             sender.setTitle_("Hide Majima")
 
     def togglePause_(self, sender):

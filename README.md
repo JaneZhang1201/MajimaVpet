@@ -26,7 +26,7 @@ A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders w
 | **Typing** | typing | Keyboard in use: a speech bubble fills with "…" until you stop typing (0.5s) |
 | **Notes** | notetake | Double-click Majima: he stops and gets ready to take a note (see below) |
 
-The pet window floats above other windows and stays in the same spot on every desktop (Space), including full-screen apps and Mission Control. Clicks pass through its transparent areas.
+The pet window floats above other windows and stays in the same spot on every desktop (Space), including full-screen apps and Mission Control. It doesn't even flicker while desktops slide. Clicks pass through its transparent areas.
 
 ## Notebook
 
@@ -87,6 +87,7 @@ Settings at the top of `program/vpet_mac.py`:
 | `typing_after` | `0.5` | Seconds after the last key press that still count as typing |
 | `notetake_timeout` | `10.0` | Seconds to click Majima again after double-clicking, before he goes back to normal |
 | `drag_threshold` | `3` | Pixels the mouse must move before a press becomes a drag |
+| `fixed_on_desktop_switch` | `True` | Keep Majima and his notebook fixed while desktops slide, like the cursor (uses a private macOS API; falls back to a short flicker if unavailable) |
 | `idle_tick` | `0.5` | Loop interval while paused or hidden (saves CPU) |
 | `walk_move_every` | `2` | Move the window every N ticks while walking (moving a window costs more than changing frames) |
 
