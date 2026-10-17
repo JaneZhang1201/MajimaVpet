@@ -38,7 +38,7 @@ The pet window floats above other windows and stays in the same spot on every de
 |---|---|
 | **Enter** or **Save** | Saved to your notebook, with date, time and `#labels` |
 | **⌥↩** | New line (e.g. the word's meaning) |
-| **Quick** | Yellow sticky on screen until you close it → not saved unless you click its **Save** |
+| **Quick** | Yellow sticky on screen until you close it, not saved unless you click its **Save** |
 | **Esc** | Discarded |
 
 Good to know:
