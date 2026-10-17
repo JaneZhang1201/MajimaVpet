@@ -47,17 +47,23 @@ To read your notes, choose **Notebook…** from the menu bar icon. Notes are lis
 
 Notes are stored only on your Mac, in `~/Library/Application Support/MajimaVpet/majima.db` (SQLite, with full-text search that also works for Chinese), and never in this repository. Older versions used `notes.db`; it is renamed automatically on first start.
 
-## How notes are stored
+## Your notes
 
-Everything lives in one local SQLite file, `~/Library/Application Support/MajimaVpet/majima.db`. Each feature keeps its own tables (Pomodoro history will get its own later). `program/majima_db.py` opens the file; `program/notes_store.py` owns the notebook tables.
+**Where they are.** All your notes are saved in one file on your Mac: `~/Library/Application Support/MajimaVpet/majima.db`. They are never uploaded or added to this repository. To open the folder, in Finder press **⇧⌘G** and paste `~/Library/Application Support/MajimaVpet`.
 
-| Table | Holds |
-|---|---|
-| `notes` | One row per note: `text` (UTF-8, line breaks kept), `kind` (`word`), `created_at` / `updated_at` / `deleted_at` (ISO 8601 with time zone), `status` (`kept` or `deleted`) |
-| `note_labels` | One row per label on a note: the kind plus every `#hashtag`, so a note can have any number of labels |
-| `notes_fts` | Full-text search index kept in sync by triggers; trigram tokens, so English and Chinese both work |
+**Organizing them.** Each note gets the date and time automatically. Type `#labels` anywhere in a note (for example `#reading`), then use the label menu in the Notebook window to see only those notes. Search finds English and Chinese text.
 
-A note's life: **kept** → Delete → **deleted** (shown in Recently Deleted, restorable) → after 30 days, Delete Forever or Empty → the row, its labels and its index entry are removed. Secure delete overwrites the erased bytes. Older databases are upgraded automatically on start (`notes.db` is renamed to `majima.db`, and `deleted_at` is added).
+**Deleting and recovering.**
+1. Select a note in the Notebook window and click **Delete**. It moves to **Recently Deleted**, the last item in the label menu.
+2. Changed your mind? Open Recently Deleted, select the note and click **Restore**.
+3. To erase it now, click **Delete Forever**, or **Empty Recently Deleted** to erase them all. This cannot be undone.
+4. Notes left in Recently Deleted are erased automatically after 30 days (change `trash_days` to adjust).
+
+**Backing up.** Time Machine backs the file up automatically. To keep your own copy, quit Majima and copy `majima.db` somewhere safe; to restore, quit Majima and put the copy back in the same folder.
+
+**Moving to a new Mac.** Copy `majima.db` into the same folder on the new Mac before starting Majima.
+
+**Reading them without Majima.** `majima.db` is a standard SQLite file. Any SQLite viewer (for example DB Browser for SQLite) can open it.
 
 ## Menu bar
 
