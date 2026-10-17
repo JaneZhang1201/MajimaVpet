@@ -41,19 +41,12 @@ The pet window floats above other windows and stays in the same spot on every de
 | **Quick** | Yellow sticky on screen until you close it, not saved unless you click its **Save** |
 | **Esc** | Discarded |
 
-Good to know:
-- No second click within 10 s → Majima goes back to normal
-- While you write → Majima plays his typing animation
-- Drag Majima or the notebook → both move together
-- Your browser keeps focus the whole time
-
 ### Read your notes
 
 **Menu bar icon → Notebook…** (⌘B)
 
-- Search box → find English or Chinese text
+- Find text with search box
 - Label menu → `#label` → show only those notes
-- Click a note → full text on the right
 
 ## Your notes
 
@@ -65,7 +58,7 @@ Good to know:
 | Recover | Label menu → **Recently Deleted** → select the note → **Restore** |
 | Erase one now | Recently Deleted → select the note → **Delete Forever** (cannot be undone) |
 | Erase all now | Recently Deleted → **Empty Recently Deleted** (cannot be undone) |
-| Erase automatically | Left in Recently Deleted for 30 days → erased (change with `trash_days`) |
+| Erase automatically | Left in Recently Deleted for 30 days (change with `trash_days`) |
 
 ### Where they are saved
 
