@@ -30,40 +30,58 @@ The pet window floats above other windows and stays in the same spot on every de
 
 ## Notebook
 
-Jot down words you meet while reading:
+### Write a note
 
-1. **Double-click** Majima. He stops where he is and switches to note-taking.
-2. **Click him again** within 10 seconds to open a notebook page above him: yellow paper with ruled lines. If you don't, he goes back to normal.
-3. Write the word or note (**⌥↩** starts a new line, for example for its meaning) and choose:
-   - **Save** (Enter): kept in your notebook, with the time and labels recorded automatically. Add `#labels` anywhere in the text.
-   - **Quick**: shown as a yellow sticky until you close it. It isn't stored, but its **Save** button keeps it after all.
-   - **Esc**: discard.
+**Double-click Majima → click him again (within 10 s) → write → choose:**
 
-While you write, Majima plays his typing animation as if he's taking dictation. Majima and the notebook move together: drag either one and the other follows. Focus goes back to the app you were reading.
+| Key / button | Result |
+|---|---|
+| **Enter** or **Save** | Saved to your notebook, with date, time and `#labels` |
+| **⌥↩** | New line (e.g. the word's meaning) |
+| **Quick** | Yellow sticky on screen until you close it → not saved unless you click its **Save** |
+| **Esc** | Discarded |
 
-To read your notes, choose **Notebook…** from the menu bar icon. Notes are listed newest first; you can search them (English or Chinese), filter by label, and read the full note on the right.
+Good to know:
+- No second click within 10 s → Majima goes back to normal
+- While you write → Majima plays his typing animation
+- Drag Majima or the notebook → both move together
+- Your browser keeps focus the whole time
 
-**Delete** moves a note to **Recently Deleted** (the last item in the label menu). From there you can **Restore** it or **Delete Forever**, or **Empty Recently Deleted**. Notes left there are removed for good after 30 days, and erased notes are overwritten inside the file.
+### Read your notes
 
-Notes are stored only on your Mac, in `~/Library/Application Support/MajimaVpet/majima.db` (SQLite, with full-text search that also works for Chinese), and never in this repository. Older versions used `notes.db`; it is renamed automatically on first start.
+**Menu bar icon → Notebook…** (⌘B)
+
+- Search box → find English or Chinese text
+- Label menu → `#label` → show only those notes
+- Click a note → full text on the right
 
 ## Your notes
 
-**Where they are.** All your notes are saved in one file on your Mac: `~/Library/Application Support/MajimaVpet/majima.db`. They are never uploaded or added to this repository. To open the folder, in Finder press **⇧⌘G** and paste `~/Library/Application Support/MajimaVpet`.
+### Delete and recover
 
-**Organizing them.** Each note gets the date and time automatically. Type `#labels` anywhere in a note (for example `#reading`), then use the label menu in the Notebook window to see only those notes. Search finds English and Chinese text.
+| To… | Do this |
+|---|---|
+| Delete | Notebook → select a note → **Delete** → moved to Recently Deleted |
+| Recover | Label menu → **Recently Deleted** → select the note → **Restore** |
+| Erase one now | Recently Deleted → select the note → **Delete Forever** (cannot be undone) |
+| Erase all now | Recently Deleted → **Empty Recently Deleted** (cannot be undone) |
+| Erase automatically | Left in Recently Deleted for 30 days → erased (change with `trash_days`) |
 
-**Deleting and recovering.**
-1. Select a note in the Notebook window and click **Delete**. It moves to **Recently Deleted**, the last item in the label menu.
-2. Changed your mind? Open Recently Deleted, select the note and click **Restore**.
-3. To erase it now, click **Delete Forever**, or **Empty Recently Deleted** to erase them all. This cannot be undone.
-4. Notes left in Recently Deleted are erased automatically after 30 days (change `trash_days` to adjust).
+### Where they are saved
 
-**Backing up.** Time Machine backs the file up automatically. To keep your own copy, quit Majima and copy `majima.db` somewhere safe; to restore, quit Majima and put the copy back in the same folder.
+- File → `~/Library/Application Support/MajimaVpet/majima.db` (only on your Mac, never uploaded)
+- Open the folder → Finder → **⇧⌘G** → paste `~/Library/Application Support/MajimaVpet` → Return
 
-**Moving to a new Mac.** Copy `majima.db` into the same folder on the new Mac before starting Majima.
+### Back up, restore, move
 
-**Reading them without Majima.** `majima.db` is a standard SQLite file. Any SQLite viewer (for example DB Browser for SQLite) can open it.
+| To… | Do this |
+|---|---|
+| Back up | Time Machine (automatic), or quit Majima → copy `majima.db` somewhere safe |
+| Restore a backup | Quit Majima → put the copy back in the folder → start Majima |
+| Move to a new Mac | Copy `majima.db` to the same folder on the new Mac → start Majima |
+| Read without Majima | Open `majima.db` in any SQLite viewer (e.g. DB Browser for SQLite) |
+
+Upgrading from an older version → `notes.db` is renamed to `majima.db` automatically.
 
 ## Menu bar
 
