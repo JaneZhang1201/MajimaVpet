@@ -32,7 +32,7 @@ The pet window floats above other windows and stays in the same spot on every de
 
 ### Write a note
 
-**Double-click Majima → click him again (within 10 s) → write → choose:**
+**Double-click Majima → click him again (within 10s) → write → choose:**
 
 | Key / button | Result |
 |---|---|
