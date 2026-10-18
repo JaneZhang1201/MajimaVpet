@@ -9,10 +9,12 @@ import AppKit
 import objc
 import Quartz
 from Foundation import NSURL, NSArray, NSNumber
+from AppKit import NSBeep
 from PyObjCTools import AppHelper
 
 import majima_db
 import notes_store
+import pomodoro_store
 
 
 # macOS 版本：系统自带的 Tk 无法在透明窗口中显示图片，所以这里直接用 Cocoa (PyObjC) 绘制
@@ -40,6 +42,19 @@ typing_after = 0.5      # 最后一次按键后多少秒内算"正在打字"（�
 notetake_timeout = 10.0 # 双击后多少秒内没再单击，就回到平常动作
 drag_threshold = 3      # 按住后移动超过几像素才算拖动（否则算点击）
 trash_days = 30         # 删除的笔记在"最近删除"里保留几天，之后自动永久删除
+# 番茄钟
+focus_minutes = 25          # 一个番茄的专注时间
+short_break_minutes = 5     # 短休息
+long_break_minutes = 30     # 长休息（每轮第 4 个番茄之后，代替短休息）
+pomodoros_per_section = 4   # 每轮几个番茄
+warning_seconds = 60        # 休息结束前多少秒提醒一次
+alarm_repeat_every = 60     # 人不在时，每隔多少秒再响一次
+alarm_repeat_max = 10       # 最多再响几次
+alarm_walk_speed = 6        # 闹钟时走到屏幕中间的速度（像素 / tick，约 120 像素 / 秒）
+alarm_act_seconds = 4       # 在屏幕中间表演几秒
+alarm_sounds = {            # 系统自带的声音；sounds/ 文件夹里同名的文件（focus-end.m4a 等）会代替它
+    'focus_end': 'Glass', 'break_end': 'Hero', 'warning': 'Tink', 'task_done': 'Funk'}
+pixel_font_name = 'Silkscreen-Bold'  # 头顶文字用的像素字体（fonts/Silkscreen-Bold.ttf）
 fixed_on_desktop_switch = True  # 切换桌面时像鼠标一样保持不动（用 macOS 私有接口；失败时自动退回普通行为）
 
 # ---------------- 切换桌面时保持不动 ----------------
@@ -104,12 +119,33 @@ def clear_background(img):
         if y < h - 1: stack.append(p + w)
     return Quartz.CGBitmapContextCreateImage(ctx)
 
-# 角色脚下的水平中心（用来在不同宽度的动画之间对齐，避免切换时跳位置）
+# 角色脚下的水平中心（用来在不同宽度的动画之间对齐，避免切换时跳位置）。
+# 只看画面里最大的一块连在一起的像素 —— 也就是 Majima 本人，旁边的对话框、金币、时钟等道具不算
 def body_center(img):
     ctx, buf, w, h = bitmap(img)
-    rows = [y for y in range(h) if any(buf[(y * w + x) * 4 + 3] for x in range(w))]
-    feet = range(max(rows) - 25, max(rows) + 1)  # 只看最下面的身体部分，忽略头顶的对话框/特效
-    xs = [x for y in feet for x in range(w) if buf[(y * w + x) * 4 + 3]]
+    opaque = [buf[i * 4 + 3] > 0 for i in range(w * h)]
+    seen, best = bytearray(w * h), []
+    for start in range(w * h):
+        if not opaque[start] or seen[start]:
+            continue
+        blob, stack = [], [start]
+        seen[start] = 1
+        while stack:
+            p = stack.pop()
+            blob.append(p)
+            x, y = p % w, p // w
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < w and 0 <= ny < h:
+                        q = ny * w + nx
+                        if opaque[q] and not seen[q]:
+                            seen[q] = 1
+                            stack.append(q)
+        if len(blob) > len(best):
+            best = blob
+    feet = max(p // w for p in best)
+    xs = [p % w for p in best if p // w > feet - 25]  # 只看身体下半部分（头发的形状每帧可能不同）
     return (min(xs) + max(xs)) / 2
 
 # 加载 GIF 的每一帧（CGImage）、每帧时长（秒）和角色中心
@@ -128,8 +164,19 @@ categories = {
     'showtime': ['change', 'dance'],
     'typing': ['typing'],
     'notes': ['notetake'],
+    'pomodoro': ['focus-1', 'focus-2', 'focus-3', 'focus-4', 'focus-5', 'focus-end',
+                 'break', 'longbreak', 'alarm-work', 'alarm-done'],
 }
-anims = {name: load_gif(name) for names in categories.values() for name in names}
+anims = {name: load_gif(name) for names in categories.values() for name in names
+         if os.path.exists(impath + 'majima-' + name + '.gif')}
+
+# 番茄钟的画缺少时用的替代动画（"问是否完成"用 confuse，"跑到中间"用 walk）
+art_fallback = {'focus-1': 'typing', 'focus-2': 'typing', 'focus-3': 'typing', 'focus-4': 'typing',
+                'focus-5': 'typing', 'focus-end': 'dance', 'break': 'idle', 'longbreak': 'idle',
+                'alarm-work': 'shock', 'alarm-done': 'dance', 'check': 'confuse', 'run': 'walk'}
+
+def art(name):
+    return name if name in anims else art_fallback.get(name, 'idle')
 
 # ---------------- 状态 ----------------
 mode = 'steady'      # steady / showtime / typing / dragging / dropped / notetake（等待单击）/ note（输入框打开）
@@ -186,11 +233,20 @@ def move_to(x, y, apply=True):
     if apply and target != shown_pos:
         shown_pos = target
         window.setFrameOrigin_(target)
+        if 'check_card' in globals():  # 头顶的标签和"任务完成了吗？"气泡和 Majima 同一时刻移动，拖动时不落后
+            bubble.follow()
+            check_card.follow()
 
 # 当前动画播完后，根据模式决定下一个动画
 def next_anim():
     global mode
-    if mode == 'steady':
+    if mode == 'steady' and pomo.active:
+        mode = 'pomo'
+    if mode == 'pomo':
+        play(pomo.current_art())
+    elif mode == 'alarm':
+        play(anim, loops=1000)  # 闹钟期间保持当前动画
+    elif mode == 'steady':
         if cursor_moving():
             mode = 'showtime'
             play('change')  # 闪光登场
@@ -237,6 +293,8 @@ def clamp_origin(x, y, area):
 # 主循环：检测鼠标、推进动画帧、走路
 def update():
     global mode, last_mouse, last_move, frame, frame_time, loops_left, walk_vec, ticks
+    pomo.tick()
+    alarm.tick()
     if paused or not window.isVisible():
         AppHelper.callLater(idle_tick, update)  # 看不到变化时降低频率，几乎不占 CPU
         return
@@ -247,8 +305,20 @@ def update():
         mode = 'steady'
         next_anim()  # 一直没点：回到平常动作
 
+    if pomo.active and mode in ('steady', 'showtime', 'typing'):
+        mode = 'pomo'  # 番茄钟进行中：不跳舞、不打字动画，显示番茄钟的画
+        play(pomo.current_art())
+    elif mode == 'pomo' and anim != pomo.current_art():
+        play(pomo.current_art())  # 每 5 分钟换一张画
+    if mode == 'alarm':
+        alarm.walk_step()  # 走到屏幕中间 / 走回原位
+    bubble.follow()
+    check_card.follow()
+
     if mode == 'note' and note_box is not None:
         note_box.follow_panel()  # 笔记本被拖走时，Majima 跟上
+    if task_box is not None:
+        task_box.follow_panel()  # 任务名输入页被拖走时，Majima 跟上
 
     if mode == 'note':  # 输入框打开时：打字就播打字动画，停下就回到记笔记姿势
         typing_now = keyboard_typing()
@@ -274,7 +344,7 @@ def update():
     elif mode == 'showtime' and anim == 'dance' and not cursor_moving():
         next_anim()  # 鼠标停了：结束跳舞
 
-    if anim == 'walk' and mode == 'steady':
+    if anim == 'walk' and mode == 'steady' and task_box is None:  # 输入任务名时不自己走开
         dx, dy = walk_vec
         x, y = clamp_origin(pos[0] + dx, pos[1] + dy, screen_area())
         # 碰到屏幕边缘就反弹
@@ -323,6 +393,8 @@ class PetView(AppKit.NSView):
         x, y = clamp_origin(mouse.x - drag_offset[0], mouse.y - drag_offset[1], screen_area(mouse))
         if mode == 'note' and note_box is not None:
             note_box.move_together(x, y)  # 移动笔记本，Majima 作为子窗口一起走
+        elif task_box is not None:
+            task_box.move_together(x, y)  # 移动任务名输入页，Majima 一起走
         else:
             move_to(x, y)
 
@@ -330,12 +402,15 @@ class PetView(AppKit.NSView):
         global mode, notetake_since
         if mode == 'note':
             return  # 输入框打开时：拖完保持原样，点击不做任何事
+        if mode == 'alarm' and not drag_started:
+            alarm.dismiss()  # 闹钟表演时点他一下：提前结束，走回原位
+            return
         if drag_started:
             mode = 'dropped'
             play('confuse', loops=dropped_loops)  # 放下后："?"
         elif mode == 'notetake' and time.monotonic() - notetake_since > AppKit.NSEvent.doubleClickInterval():
             open_note_box()  # 再单击一下：弹出输入框
-        elif event.clickCount() == 2 and mode in ('steady', 'showtime', 'typing', 'dropped'):
+        elif event.clickCount() == 2 and mode in ('steady', 'showtime', 'typing', 'dropped', 'pomo'):
             mode = 'notetake'  # 双击：停在原地，准备记笔记
             notetake_since = time.monotonic()
             play('notetake')
@@ -347,6 +422,7 @@ drag_offset = (0, 0)
 # ---------------- 记笔记：输入框和便利贴 ----------------
 db = majima_db.open_db()  # 共享数据库 majima.db（笔记本、之后的番茄钟各用自己的表）
 notes_store.setup(db)
+pomodoro_store.setup(db)
 note_box = None       # 当前打开的输入框控制器
 stickies = []         # 屏幕上的便利贴（保持引用，避免被回收）
 
@@ -390,6 +466,8 @@ def setup_panel(panel, title):
     panel.setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameAqua))  # 纸张总用浅色，深色模式下也看得清
     panel.setBackgroundColor_(paper_color)
 
+paper_placeholders = {}  # 每张纸自己的提示文字（默认是记笔记的提示）
+
 # 画着横线的文字区域（输入框和便利贴共用）
 class PaperTextView(AppKit.NSTextView):
     def drawViewBackgroundInRect_(self, rect):
@@ -412,7 +490,7 @@ class PaperTextView(AppKit.NSTextView):
         path.stroke()
         if self.isEditable() and not self.string():  # 空白时显示提示文字
             AppKit.NSAttributedString.alloc().initWithString_attributes_(
-                'Word or note… (#label optional)',
+                paper_placeholders.get(objc.pyobjc_id(self), 'Word or note… (#label optional)'),
                 {AppKit.NSFontAttributeName: note_font,
                  AppKit.NSForegroundColorAttributeName: AppKit.NSColor.colorWithWhite_alpha_(0.5, 0.6)},
             ).drawAtPoint_((paper_inset[0] + 5, paper_inset[1] + 2))
@@ -868,6 +946,608 @@ def purge_trash():
 
 purge_trash()
 
+# ---------------- 番茄钟 ----------------
+# 流程：输入任务 → 专注 25 分钟 → 问"任务完成了吗？" → 短休息 5 分钟（×3）/ 第 4 个之后长休息 30 分钟 → 下一个番茄 …
+# 每个阶段结束自动进入下一个阶段，并响闹钟（见 Alarm）。
+
+def seconds_since_input():
+    """距离上一次鼠标 / 键盘操作过了多少秒"""
+    return Quartz.CGEventSourceSecondsSinceLastEventType(
+        Quartz.kCGEventSourceStateCombinedSessionState, Quartz.kCGAnyInputEventType)
+
+def fmt_left(seconds):
+    seconds = max(0, int(seconds + 0.999))
+    return f'{seconds // 60}:{seconds % 60:02d}'
+
+class Pomodoro:
+    def __init__(self):
+        self.active = False
+        self.stage = None       # focus / check（等你回答"任务完成了吗？"）/ short_break / long_break
+        self.paused_left = None
+
+    def start(self, task_name):
+        self.task_id = pomodoro_store.start_task(db, task_name)
+        self.task_name = task_name.strip()
+        self.active, self.section, self.number = True, 1, 0
+        self.start_focus()
+
+    def start_focus(self):
+        self.number += 1
+        self.begin('focus', focus_minutes)
+
+    def begin(self, stage, minutes):
+        self.stage, self.stage_start = stage, time.time()
+        self.stage_length = minutes * 60
+        self.stage_end = self.stage_start + self.stage_length
+        self.paused_left, self.warned, self.prewarmed = None, False, False
+
+    def left(self):
+        return self.paused_left if self.paused_left is not None else self.stage_end - time.time()
+
+    def current_art(self):
+        if self.stage == 'focus':  # 专注时每 5 分钟（专注时长的 1/5）换一张：金币越堆越高
+            k = min(5, int((self.stage_length - self.left()) / (self.stage_length / 5)) + 1)
+            return art(f'focus-{k}')
+        if self.stage == 'check':
+            return art('focus-end')  # 等你回答时：站在堆满的金币旁边
+        return art('longbreak' if self.stage == 'long_break' else 'break')
+
+    def tick(self):
+        if not self.active or self.paused_left is not None or self.stage == 'check':
+            return  # 等你回答时不计时
+        left = self.left()
+        if self.stage != 'focus' and not self.warned and left <= warning_seconds < self.stage_length:
+            self.warned = True
+            alarm.warn()
+        if left <= 2 and not self.prewarmed:
+            self.prewarmed = True
+            prewarm_audio()  # 提前 2 秒把声音系统准备好，响铃时不卡
+        if left <= 0:
+            self.end_stage()
+
+    def end_stage(self):
+        if self.stage == 'focus':
+            pomodoro_store.add_pomodoro(db, self.task_id, self.stage_start, time.time(), 'completed',
+                                        self.section, self.number)
+            self.stage = 'check'  # 先问"任务完成了吗？"，回答之前不继续
+            alarm.fire('focus_end')  # 先表演（不显示文字），表演完再出现"任务完成了吗？"气泡
+        else:
+            if self.stage == 'long_break':  # 一轮结束，开始新的一轮
+                self.section, self.number = self.section + 1, 0
+            check_card.close()
+            self.start_focus()
+            alarm.fire('break_end')
+
+    def start_break(self):
+        """回答"还没完成"之后：开始休息（每轮第 4 个之后是长休息）"""
+        if self.stage != 'check':
+            return
+        long = self.number >= pomodoros_per_section
+        self.begin('long_break' if long else 'short_break', long_break_minutes if long else short_break_minutes)
+        bubble.show('Long break time!' if long else 'Break time!')
+
+    def toggle_pause(self):
+        if self.paused_left is None:
+            self.paused_left = self.left()
+        else:
+            self.stage_end, self.paused_left = time.time() + self.paused_left, None
+
+    def skip_break(self):
+        if self.stage in ('short_break', 'long_break'):
+            if self.stage == 'long_break':
+                self.section, self.number = self.section + 1, 0
+            check_card.close()
+            self.start_focus()
+
+    def record_partial(self):
+        """专注到一半就结束：记为 stopped（不算一个完整的番茄）"""
+        if self.stage == 'focus':
+            pomodoro_store.add_pomodoro(db, self.task_id, self.stage_start, time.time(), 'stopped',
+                                        self.section, self.number)
+
+    def finish(self):
+        """任务完成：结束整个番茄钟，并显示总结"""
+        if not self.active:
+            return
+        self.record_partial()
+        pomodoro_store.finish_task(db, self.task_id, 'done')
+        count, minutes = pomodoro_store.task_summary(db, self.task_id)
+        self.end_session()
+        alarm.fire('task_done', f'Task complete! {count} pomodoro' + ('' if count == 1 else 's') + f' · {minutes} min')
+
+    def stop(self):
+        if not self.active:
+            return
+        self.record_partial()
+        pomodoro_store.finish_task(db, self.task_id, 'stopped')
+        self.end_session()
+        bubble.show('Pomodoro stopped')
+
+    def end_session(self):
+        global mode
+        self.active, self.stage = False, None
+        check_card.close()
+        alarm.stop_repeating()
+        if mode == 'pomo':
+            mode = 'steady'
+            next_anim()
+
+    def status(self):
+        """菜单里显示的一行状态"""
+        name = self.task_name if len(self.task_name) <= 24 else self.task_name[:23] + '…'
+        if self.stage == 'check':
+            return f'🍅 {name} — waiting: task finished?'
+        if self.stage == 'focus':
+            what = f'Focus {self.number}/{pomodoros_per_section}'
+        else:
+            what = 'Long break' if self.stage == 'long_break' else 'Short break'
+        pause = ' (paused)' if self.paused_left is not None else ''
+        return f'🍅 {name} — {what} · {fmt_left(self.left())} left{pause}'
+
+pomo = Pomodoro()
+
+# ---------------- 闹钟：声音 + Majima 走到屏幕中间表演，然后走回原位 ----------------
+sound_dir = impath + 'sounds/'
+sound_files = {'focus_end': 'focus-end', 'break_end': 'break-end', 'warning': 'warning', 'task_done': 'task-done'}
+alarm_art = {'focus_end': 'focus-end', 'break_end': 'alarm-work', 'task_done': 'alarm-done'}
+alarm_text = {'focus_end': 'Pomodoro done!', 'break_end': 'Back to work!', 'task_done': 'Task complete!'}
+muted = False
+
+def play_sound(kind):
+    if muted:
+        return
+    sound = None
+    for ext in ('m4a', 'mp3', 'wav', 'aiff'):  # sounds/ 文件夹里的同名文件优先
+        path = f'{sound_dir}{sound_files[kind]}.{ext}'
+        if os.path.exists(path):
+            sound = AppKit.NSSound.alloc().initWithContentsOfFile_byReference_(path, True)
+            break
+    if sound is None:
+        sound = AppKit.NSSound.soundNamed_(alarm_sounds[kind])
+    if sound is not None:
+        sound.stop()
+        sound.play()
+        playing_sounds[:] = [sound]  # 保持引用，播放完之前不被回收
+
+playing_sounds = []
+
+def prewarm_audio():
+    """静音播放一下：第一次播放声音要先启动音频系统（约 0.25 秒），提前做掉"""
+    s = AppKit.NSSound.soundNamed_(alarm_sounds['warning']).copy()
+    s.setVolume_(0)
+    s.play()
+    warm_sounds[:] = [s]
+
+warm_sounds = []
+
+class Alarm:
+    def __init__(self):
+        self.state = None        # None / to_centre / acting / waiting
+        self.kind = None
+        self.last_ring = None    # 最近一次响的时间（用来判断人在不在、要不要再响）
+        self.repeats = 0
+
+    def warn(self):
+        """休息快结束：轻轻响一声，原地说一句"""
+        play_sound('warning')
+        n, unit = (warning_seconds // 60, 'minute') if warning_seconds >= 60 else (warning_seconds, 'second')
+        bubble.show(f'{n} {unit}' + ('' if n == 1 else 's') + ' left')
+
+    def fire(self, kind, text=None):
+        """时间到（专注 / 休息结束）：响铃，Majima 走到屏幕中间表演；任务完成：原地庆祝"""
+        self.kind, self.text = kind, text or alarm_text[kind]
+        self.last_ring, self.repeats = time.time(), 0
+        play_sound(kind)
+        if kind == 'task_done':
+            self.celebrate_here()
+        else:
+            self.go_to_centre()
+
+    def celebrate_here(self):
+        global mode
+        if self.can_walk():
+            mode = 'alarm'
+            self.act()
+        else:
+            bubble.show(self.text)
+
+    def can_walk(self):
+        return window.isVisible() and not paused and mode not in ('note', 'notetake', 'dragging')
+
+    def go_to_centre(self):
+        global mode
+        if self.state in ('acting', 'waiting'):  # 已经在中间了：直接再表演一次
+            self.act()
+            return
+        if not self.can_walk():  # 不方便走动（比如正在记笔记）：原地提醒
+            if self.kind == 'focus_end':
+                self.after_act()
+            else:
+                bubble.show(self.text)
+            return
+        mode, self.state = 'alarm', 'to_centre'
+        play(art('run'), loops=1000)
+
+    def act(self):
+        self.state, self.act_until = 'acting', time.time() + alarm_act_seconds
+        play(art(alarm_art[self.kind]), loops=1000)
+        if self.kind != 'focus_end':  # 番茄结束只表演，不显示文字
+            bubble.show(self.text, alarm_act_seconds + 1)
+
+    def after_act(self):
+        """番茄结束的表演做完：出现"任务完成了吗？"气泡"""
+        if self.kind == 'focus_end' and pomo.stage == 'check' and check_card.panel is None:
+            check_card.show()
+
+    def dismiss(self):
+        """点一下 Majima：不表演了，就在当前位置恢复平常的样子"""
+        if self.state in ('to_centre', 'acting', 'waiting'):
+            self.after_act()
+            self.done()
+
+    def done(self):
+        """提醒结束：不走回原位，从现在的位置像平常一样继续"""
+        global mode
+        self.state = None
+        mode = 'steady'
+        next_anim()
+
+    def stop_repeating(self):
+        self.last_ring = None
+
+    def user_back(self):
+        """最近一次响铃之后，有没有动过鼠标 / 键盘"""
+        return self.last_ring is not None and seconds_since_input() < time.time() - self.last_ring - 0.5
+
+    def tick(self):
+        """人不在时每分钟再响一次（最多 alarm_repeat_max 次）；人回来了就不再响"""
+        if self.last_ring is None or self.kind == 'task_done':
+            return
+        if self.user_back():
+            self.last_ring = None
+            if self.state == 'waiting':
+                self.done()
+        elif time.time() - self.last_ring >= alarm_repeat_every and self.repeats < alarm_repeat_max:
+            self.repeats += 1
+            self.last_ring = time.time()
+            play_sound(self.kind)
+            self.go_to_centre()
+
+    def target(self):
+        """屏幕中间（让 Majima 的身体在正中）"""
+        area = screen_area()
+        x = area.origin.x + area.size.width / 2 - anims[anim][2] * scale
+        y = area.origin.y + (area.size.height - height) / 2
+        return clamp_origin(x, y, area)
+
+    def step_to(self, tx, ty):
+        """朝目标走一步，到了返回 True"""
+        dx, dy = tx - pos[0], ty - pos[1]
+        dist = math.hypot(dx, dy)
+        if dist <= alarm_walk_speed:
+            move_to(tx, ty)
+            return True
+        move_to(pos[0] + dx / dist * alarm_walk_speed, pos[1] + dy / dist * alarm_walk_speed)
+        return False
+
+    def walk_step(self):
+        global mode
+        if self.state == 'to_centre':
+            if self.step_to(*self.target()):
+                self.act()
+        elif self.state == 'acting' and time.time() >= self.act_until:
+            self.after_act()
+            if self.kind != 'task_done' and self.last_ring is not None and not self.user_back():
+                self.state = 'waiting'  # 人不在：留在中间等，到时间再响
+            else:
+                self.done()
+
+alarm = Alarm()
+
+# 像素字体：fonts/ 里的字体只给本程序用（不安装到系统）；缺少时用系统粗体
+def load_fonts():
+    try:
+        ct = ctypes.cdll.LoadLibrary('/System/Library/Frameworks/CoreText.framework/CoreText')
+        ct.CTFontManagerRegisterFontsForURL.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+        ct.CTFontManagerRegisterFontsForURL.restype = ctypes.c_bool
+        folder = impath + 'fonts/'
+        for name in os.listdir(folder) if os.path.isdir(folder) else []:
+            if name.endswith(('.ttf', '.otf')):
+                ct.CTFontManagerRegisterFontsForURL(objc.pyobjc_id(NSURL.fileURLWithPath_(folder + name)), 1, None)
+    except Exception as e:
+        print('could not load fonts:', e)
+
+load_fonts()
+
+def pixel_font(size):
+    return AppKit.NSFont.fontWithName_size_(pixel_font_name, size) or AppKit.NSFont.boldSystemFontOfSize_(size)
+
+# ---------------- 头顶的话：黄色小标签 + 像素字，几秒后消失 ----------------
+class Bubble:
+    def __init__(self):
+        self.panel = None
+        self.token = 0
+
+    def build(self):
+        self.panel = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (100, 30)), AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
+            AppKit.NSBackingStoreBuffered, False)
+        p = self.panel
+        p.setOpaque_(False)
+        p.setBackgroundColor_(AppKit.NSColor.clearColor())
+        p.setHasShadow_(True)
+        p.setIgnoresMouseEvents_(True)
+        p.setLevel_(AppKit.NSStatusWindowLevel)
+        p.setHidesOnDeactivate_(False)
+        p.setCollectionBehavior_(window.collectionBehavior())
+        box = AppKit.NSView.alloc().initWithFrame_(((0, 0), (100, 30)))  # 黄色圆角标签，深色边框
+        box.setWantsLayer_(True)
+        box.layer().setBackgroundColor_(paper_color.CGColor())
+        box.layer().setCornerRadius_(9)
+        box.layer().setBorderWidth_(2)
+        box.layer().setBorderColor_(ink_color.CGColor())
+        self.label = AppKit.NSTextField.labelWithString_('')
+        box.addSubview_(self.label)
+        p.setContentView_(box)
+
+    def show(self, text, seconds=4):
+        if self.panel is None:
+            self.build()
+        self.label.setAttributedStringValue_(AppKit.NSAttributedString.alloc().initWithString_attributes_(text, {
+            AppKit.NSFontAttributeName: pixel_font(13),
+            AppKit.NSForegroundColorAttributeName: ink_color}))
+        size = self.label.fittingSize()
+        w, h = size.width + 24, size.height + 12
+        self.panel.setContentSize_((w, h))
+        self.panel.contentView().setFrame_(((0, 0), (w, h)))
+        self.label.setFrame_(((12, 6), size))
+        check_card.suspend()  # 黄色标签和"任务完成了吗？"气泡不同时出现
+        self.follow(force=True)
+        self.panel.orderFrontRegardless()
+        pin_window(self.panel)
+        self.token += 1
+        AppHelper.callLater(seconds, self.hide, self.token)
+
+    def hide(self, token):
+        if token == self.token and self.panel is not None:
+            self.panel.orderOut_(None)
+            check_card.resume()
+
+    def visible(self):
+        return self.panel is not None and self.panel.isVisible()
+
+    def follow(self, force=False):
+        """跟着 Majima：放在他头顶"""
+        if self.panel is None or not (force or self.panel.isVisible()):
+            return
+        f = self.panel.frame()
+        area = screen_area()
+        x = pos[0] + anims[anim][2] * scale - f.size.width / 2
+        y = pos[1] + 90 * scale  # 头顶上方，不挡住头发
+        x = min(max(x, area.origin.x), area.origin.x + area.size.width - f.size.width)
+        y = min(y, area.origin.y + area.size.height - f.size.height)
+        self.panel.setFrameOrigin_((x, y))
+
+bubble = Bubble()
+
+# ---------------- 番茄结束后 Majima 在头顶的像素对话气泡里问"任务完成了吗？"（休息期间一直可以回答）----------------
+bubble_border = 3   # 像素气泡的边框粗细
+bubble_tail = 9     # 气泡下面指向 Majima 的小尾巴高度
+
+class SpeechBubbleView(AppKit.NSView):
+    """白底、粗黑边、直角的像素风对话框，下面有一个指向 Majima 的小尾巴"""
+    def drawRect_(self, rect):
+        b = self.bounds()
+        w, h, t, k = b.size.width, b.size.height, bubble_tail, bubble_border
+        tail_x = speech_tail_x[0]
+        AppKit.NSColor.blackColor().colorWithAlphaComponent_(0).set()
+        # 先画黑色的外形（框 + 尾巴），再在里面画白色
+        ink_color.setFill()
+        AppKit.NSBezierPath.fillRect_(((0, t), (w, h - t)))
+        AppKit.NSBezierPath.fillRect_(((tail_x - 6 - k, 0), (12 + 2 * k, t + k)))
+        AppKit.NSColor.whiteColor().setFill()
+        AppKit.NSBezierPath.fillRect_(((k, t + k), (w - 2 * k, h - t - 2 * k)))
+        AppKit.NSBezierPath.fillRect_(((tail_x - 6, k), (12, t + k)))
+
+speech_tail_x = [30]
+
+def pixel_button(title, frame, target, action):
+    """像素风按钮：白底、黑框、像素字"""
+    b = AppKit.NSButton.alloc().initWithFrame_(frame)
+    b.setBordered_(False)
+    b.setWantsLayer_(True)
+    b.layer().setBackgroundColor_(AppKit.NSColor.whiteColor().CGColor())
+    b.layer().setBorderWidth_(2)
+    b.layer().setBorderColor_(ink_color.CGColor())
+    b.setAttributedTitle_(AppKit.NSAttributedString.alloc().initWithString_attributes_(
+        title, {AppKit.NSFontAttributeName: pixel_font(11), AppKit.NSForegroundColorAttributeName: ink_color}))
+    b.setTarget_(target)
+    b.setAction_(action)
+    return b
+
+class CheckCard(AppKit.NSObject):
+    def init(self):
+        self = objc.super(CheckCard, self).init()
+        self.panel = None
+        self.suspended = False  # 黄色标签显示时暂时让开，标签消失后再出现
+        return self
+
+    @objc.python_method
+    def suspend(self):
+        if self.panel is not None and not self.suspended:
+            self.suspended = True
+            self.panel.orderOut_(None)
+
+    @objc.python_method
+    def resume(self):
+        if self.panel is not None and self.suspended:
+            self.suspended = False
+            self.follow(force=True)
+            self.panel.orderFrontRegardless()
+            pin_window(self.panel)
+
+    @objc.python_method
+    def show(self):
+        self.close()
+        w, h = 196, 74 + bubble_tail
+        self.panel = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (w, h)), AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
+            AppKit.NSBackingStoreBuffered, False)
+        p = self.panel
+        p.setOpaque_(False)
+        p.setBackgroundColor_(AppKit.NSColor.clearColor())
+        p.setHasShadow_(True)
+        p.setLevel_(AppKit.NSStatusWindowLevel)
+        p.setHidesOnDeactivate_(False)
+        p.setReleasedWhenClosed_(False)
+        p.setBecomesKeyOnlyIfNeeded_(True)
+        p.setCollectionBehavior_(window.collectionBehavior())
+        view = SpeechBubbleView.alloc().initWithFrame_(((0, 0), (w, h)))
+        q = AppKit.NSTextField.labelWithString_('')
+        q.setAttributedStringValue_(AppKit.NSAttributedString.alloc().initWithString_attributes_(
+            'Task finished?', {AppKit.NSFontAttributeName: pixel_font(13), AppKit.NSForegroundColorAttributeName: ink_color}))
+        q.setFrame_(((14, h - 34), (w - 28, 20)))
+        view.addSubview_(q)
+        view.addSubview_(pixel_button('Done', ((14, bubble_tail + 12), (74, 26)), self, 'done:'))
+        view.addSubview_(pixel_button('Not yet', ((w - 14 - 86, bubble_tail + 12), (86, 26)), self, 'keepGoing:'))
+        p.setContentView_(view)
+        self.follow(force=True)
+        if bubble.visible():
+            self.suspended = True  # 黄色标签还在：等它消失再出现
+        else:
+            p.orderFrontRegardless()
+            pin_window(p)
+
+    @objc.python_method
+    def close(self):
+        if self.panel is not None:
+            self.panel.orderOut_(None)
+            self.panel = None
+        self.suspended = False
+
+    @objc.python_method
+    def follow(self, force=False):
+        """放在 Majima 头顶，尾巴指向他；靠近屏幕边缘时气泡挪进来，尾巴仍对着他"""
+        if self.panel is None:
+            return
+        f = self.panel.frame()
+        area = screen_area()
+        body_x = pos[0] + anims[anim][2] * scale
+        x = min(max(body_x - 30, area.origin.x), area.origin.x + area.size.width - f.size.width)
+        y = min(pos[1] + 84 * scale, area.origin.y + area.size.height - f.size.height)
+        tail = min(max(body_x - x, 6 + bubble_border + 4), f.size.width - 6 - bubble_border - 4)
+        if force or (round(x), round(y)) != (round(f.origin.x), round(f.origin.y)) or tail != speech_tail_x[0]:
+            speech_tail_x[0] = tail
+            self.panel.setFrameOrigin_((x, y))
+            self.panel.contentView().setNeedsDisplay_(True)
+
+    def keepGoing_(self, sender):
+        self.close()
+        pomo.start_break()
+
+    def done_(self, sender):
+        self.close()
+        pomo.finish()
+
+check_card = CheckCard.alloc().init()
+
+# ---------------- 开始番茄钟：输入任务名 ----------------
+class TaskPanel(AppKit.NSPanel):
+    def canBecomeKeyWindow(self):
+        return True
+
+    def cancelOperation_(self, sender):  # Esc：取消
+        if task_box is not None:
+            task_box.cancel_(None)
+
+class TaskBox(AppKit.NSObject):
+    @objc.python_method
+    def open(self):
+        w, h = 300, line_h + 2 * paper_inset[1] + 46
+        self.panel = TaskPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (w, h)), AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskUtilityWindow
+            | AppKit.NSWindowStyleMaskNonactivatingPanel, AppKit.NSBackingStoreBuffered, False)
+        setup_panel(self.panel, 'New Pomodoro')
+        content = self.panel.contentView()
+        self.paper = make_paper(((0, 46), (w, h - 46)), '', editable=True)
+        paper_placeholders[objc.pyobjc_id(self.paper)] = 'What will you work on?'
+        self.paper.setDelegate_(self)
+        content.addSubview_(self.paper)
+        content.addSubview_(make_button('Cancel', ((w - 206, 8), (84, 30)), self, 'cancel:'))
+        start = make_button(f'Start {focus_minutes:g} min', ((w - 118, 8), (106, 30)), self, 'start:')
+        start.setKeyEquivalent_('\r')
+        content.addSubview_(start)
+        place_above_majima(self.panel)
+        o = self.panel.frame().origin
+        self.offset = (o.x - (pos[0] + anims[anim][2] * scale), o.y - pos[1])  # 相对 Majima 身体的位置
+        self.panel.setDelegate_(self)
+        self.panel.makeKeyAndOrderFront_(None)
+        pin_window(self.panel)
+        self.panel.addChildWindow_ordered_(window, AppKit.NSWindowAbove)  # 拖输入页时 Majima 跟着走
+        self.panel.makeFirstResponder_(self.paper)
+
+    # 拖 Majima → 把输入页移到对应位置，Majima 作为子窗口一起走
+    @objc.python_method
+    def move_together(self, x, y):
+        self.panel.setFrameOrigin_((x + anims[anim][2] * scale + self.offset[0], y + self.offset[1]))
+        self.follow_panel()
+
+    # 输入页被拖动后，根据 Majima 窗口的实际位置更新 pos
+    @objc.python_method
+    def follow_panel(self):
+        global shown_pos
+        f = window.frame().origin
+        if (round(f.x), round(f.y)) != shown_pos:
+            pos[0], pos[1] = f.x, f.y
+            shown_pos = (round(f.x), round(f.y))
+
+    def windowDidMove_(self, notification):
+        self.follow_panel()
+
+    def textView_doCommandBySelector_(self, text_view, selector):
+        selector = selector.decode() if isinstance(selector, bytes) else str(selector)
+        if selector in ('insertNewline:', 'insertNewlineIgnoringFieldEditor:'):
+            self.start_(None)  # 任务名只有一行：回车 = 开始
+            return True
+        if selector in ('cancelOperation:', 'complete:'):
+            self.cancel_(None)
+            return True
+        return False
+
+    def textDidChange_(self, notification):
+        self.paper.setNeedsDisplay_(True)
+
+    def start_(self, sender):
+        name = self.paper.string().strip()
+        if not name:
+            NSBeep()
+            return
+        self.close()
+        pomo.start(name)
+        bubble.show(f'Focus {focus_minutes:g} min — go!')
+
+    def cancel_(self, sender):
+        self.close()
+
+    @objc.python_method
+    def close(self):
+        global task_box, typing_ignore_until
+        paper_placeholders.pop(objc.pyobjc_id(self.paper), None)
+        self.follow_panel()
+        self.panel.removeChildWindow_(window)  # 先解除父子关系，否则隐藏输入页会把 Majima 一起隐藏
+        self.panel.orderOut_(None)
+        move_to(*clamp_origin(pos[0], pos[1], screen_area()))
+        task_box = None
+        typing_ignore_until = time.monotonic() + typing_after + 0.2
+
+task_box = None
+
+def open_task_box():
+    global task_box
+    if task_box is None and not pomo.active:
+        task_box = TaskBox.alloc().init()
+        task_box.open()
+
 # 创建应用（不在 Dock 显示图标）
 app = AppKit.NSApplication.sharedApplication()
 app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
@@ -933,6 +1613,28 @@ class MenuController(AppKit.NSObject):
     def openNotebook_(self, sender):
         notebook.open()
 
+    def startPomodoro_(self, sender):
+        open_task_box()
+
+    def pausePomodoro_(self, sender):
+        pomo.toggle_pause()
+
+    def skipBreak_(self, sender):
+        pomo.skip_break()
+
+    def finishTask_(self, sender):
+        pomo.finish()
+
+    def stopPomodoro_(self, sender):
+        pomo.stop()
+
+    def toggleMute_(self, sender):
+        global muted
+        muted = not muted
+
+    def menuNeedsUpdate_(self, m):
+        build_menu(m)
+
     def quit_(self, sender):
         app.terminate_(None)
 
@@ -948,16 +1650,40 @@ status_item = AppKit.NSStatusBar.systemStatusBar().statusItemWithLength_(AppKit.
 status_item.button().setImage_(icon)
 status_item.button().setToolTip_("MajimaVpet")
 
+def build_menu(m):
+    m.removeAllItems()
+    def item(title, action=None, key='', enabled=True, checked=False):
+        it = m.addItemWithTitle_action_keyEquivalent_(title, action, key)
+        if action:
+            it.setTarget_(controller)
+        it.setEnabled_(enabled)
+        it.setState_(AppKit.NSControlStateValueOn if checked else AppKit.NSControlStateValueOff)
+        return it
+    item('MajimaVpet', enabled=False)
+    m.addItem_(AppKit.NSMenuItem.separatorItem())
+    if pomo.active:
+        item(pomo.status(), enabled=False)
+        if pomo.stage != 'check':
+            item('Resume Pomodoro' if pomo.paused_left is not None else 'Pause Pomodoro', 'pausePomodoro:')
+        if pomo.stage in ('short_break', 'long_break'):
+            item('Skip Break', 'skipBreak:')
+        item('Task Finished ✓', 'finishTask:')
+        item('Stop Pomodoro', 'stopPomodoro:')
+    else:
+        item('Start Pomodoro…', 'startPomodoro:', 't')
+    item('Mute Alarm Sounds', 'toggleMute:', checked=muted)
+    m.addItem_(AppKit.NSMenuItem.separatorItem())
+    item('Notebook…', 'openNotebook:', 'b')
+    m.addItem_(AppKit.NSMenuItem.separatorItem())
+    item('Show Majima' if not window.isVisible() else 'Hide Majima', 'toggleVisible:', 'h')
+    item('Resume' if paused else 'Pause', 'togglePause:', 'p')
+    m.addItem_(AppKit.NSMenuItem.separatorItem())
+    item('Quit MajimaVpet', 'quit:', 'q')
+
 menu = AppKit.NSMenu.alloc().init()
-header = menu.addItemWithTitle_action_keyEquivalent_("MajimaVpet", None, "")
-header.setEnabled_(False)
-menu.addItem_(AppKit.NSMenuItem.separatorItem())
-menu.addItemWithTitle_action_keyEquivalent_("Notebook…", "openNotebook:", "b").setTarget_(controller)
-menu.addItem_(AppKit.NSMenuItem.separatorItem())
-for title, action, key in [("Hide Majima", "toggleVisible:", "h"), ("Pause", "togglePause:", "p")]:
-    menu.addItemWithTitle_action_keyEquivalent_(title, action, key).setTarget_(controller)
-menu.addItem_(AppKit.NSMenuItem.separatorItem())
-menu.addItemWithTitle_action_keyEquivalent_("Quit MajimaVpet", "quit:", "q").setTarget_(controller)
+menu.setAutoenablesItems_(False)
+menu.setDelegate_(controller)
+build_menu(menu)
 status_item.setMenu_(menu)
 
 # 启动循环
