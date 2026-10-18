@@ -14,6 +14,7 @@ A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders w
 <p>
   <img src="majima-typing.gif" alt="typing" width="160">
   <img src="majima-notetake.gif" alt="notetake" width="160">
+  <img src="majima-focus.gif" alt="focus progress" width="160">
   <img src="majima-focus-end.gif" alt="focus" width="160">
 </p>
 
