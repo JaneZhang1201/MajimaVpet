@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS pomodoros (
     task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     started_at  TEXT NOT NULL,
     ended_at    TEXT NOT NULL,
-    status      TEXT NOT NULL,                  -- completed（满 25 分钟）/ stopped（中途停止，不算数）
+    status      TEXT NOT NULL,                  -- completed（满 25 分钟）/ stopped（中途停止）/ interrupted（Mac 睡眠中断），后两种不算数
     section     INTEGER NOT NULL,               -- 第几轮（每轮 4 个番茄）
     number      INTEGER NOT NULL                -- 这一轮里的第几个（1–4）
 );

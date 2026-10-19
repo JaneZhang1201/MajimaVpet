@@ -54,6 +54,7 @@ alarm_walk_speed = 6        # 闹钟时走到屏幕中间的速度（像素 / ti
 alarm_act_seconds = 4       # 在屏幕中间表演几秒
 alarm_sounds = {            # 系统自带的声音；sounds/ 文件夹里同名的文件（focus-end.m4a 等）会代替它
     'focus_end': 'Glass', 'break_end': 'Hero', 'warning': 'Tink', 'task_done': 'Funk'}
+sleep_pause_minutes = 5      # Mac 睡眠短于这个时间：专注暂停、醒来继续；更长：这个番茄算中断
 pixel_font_name = 'Silkscreen-Bold'  # 头顶文字用的像素字体（fonts/Silkscreen-Bold.ttf）
 fixed_on_desktop_switch = True  # 切换桌面时像鼠标一样保持不动（用 macOS 私有接口；失败时自动退回普通行为）
 
@@ -295,6 +296,7 @@ def update():
     global mode, last_mouse, last_move, frame, frame_time, loops_left, walk_vec, ticks
     pomo.tick()
     alarm.tick()
+    audio.tick()
     if paused or not window.isVisible():
         AppHelper.callLater(idle_tick, update)  # 看不到变化时降低频率，几乎不占 CPU
         return
@@ -955,6 +957,10 @@ def seconds_since_input():
     return Quartz.CGEventSourceSecondsSinceLastEventType(
         Quartz.kCGEventSourceStateCombinedSessionState, Quartz.kCGAnyInputEventType)
 
+def fmt_slept(seconds):
+    """睡了多久：'12 min' / '3 h' """
+    return f'{seconds / 3600:.0f} h' if seconds >= 3600 else f'{seconds / 60:.0f} min'
+
 def fmt_left(seconds):
     seconds = max(0, int(seconds + 0.999))
     return f'{seconds // 60}:{seconds % 60:02d}'
@@ -964,8 +970,12 @@ class Pomodoro:
         self.active = False
         self.stage = None       # focus / check（等你回答"任务完成了吗？"）/ short_break / long_break
         self.paused_left = None
+        self.asleep_at = None   # Mac 开始睡眠的时间（醒来前不计时）
+        self.last_tick = time.time()
 
     def start(self, task_name):
+        if self.active:  # 已经有一个任务在进行：不再开第二个
+            return
         self.task_id = pomodoro_store.start_task(db, task_name)
         self.task_name = task_name.strip()
         self.active, self.section, self.number = True, 1, 0
@@ -979,7 +989,7 @@ class Pomodoro:
         self.stage, self.stage_start = stage, time.time()
         self.stage_length = minutes * 60
         self.stage_end = self.stage_start + self.stage_length
-        self.paused_left, self.warned, self.prewarmed = None, False, False
+        self.paused_left, self.warned = None, False
 
     def left(self):
         return self.paused_left if self.paused_left is not None else self.stage_end - time.time()
@@ -989,19 +999,31 @@ class Pomodoro:
             k = min(5, int((self.stage_length - self.left()) / (self.stage_length / 5)) + 1)
             return art(f'focus-{k}')
         if self.stage == 'check':
-            return art('focus-end')  # 等你回答时：站在堆满的金币旁边
+            return art('focus-end')
+        if self.stage == 'interrupted':
+            return art('check')  # 睡醒后问要不要重新开始：一脸疑惑  # 等你回答时：站在堆满的金币旁边
         return art('longbreak' if self.stage == 'long_break' else 'break')
 
     def tick(self):
-        if not self.active or self.paused_left is not None or self.stage == 'check':
+        now = time.time()
+        gap, self.last_tick = now - self.last_tick, now
+        if self.asleep_at is not None:
+            if gap > 30:
+                self.wake()  # 循环停了很久：刚睡醒
+            elif now - self.asleep_at > 120:
+                self.asleep_at = None  # 说要睡但没睡：照常继续
+            return
+        if gap > 60:
+            self.wake(now - gap)  # 没收到睡眠通知，但循环停了很久：当作睡眠
+        if not self.active or self.paused_left is not None or self.stage in ('check', 'interrupted'):
             return  # 等你回答时不计时
         left = self.left()
         if self.stage != 'focus' and not self.warned and left <= warning_seconds < self.stage_length:
             self.warned = True
             alarm.warn()
-        if left <= 2 and not self.prewarmed:
-            self.prewarmed = True
-            prewarm_audio()  # 提前 2 秒把声音系统准备好，响铃时不卡
+        warning_due = self.stage != 'focus' and not self.warned and warning_seconds < self.stage_length
+        if left <= awake_lead or (warning_due and left - warning_seconds <= awake_lead):
+            audio.keep(1)  # 快要响了：先打开声音输出（见 AudioKeeper）
         if left <= 0:
             self.end_stage()
 
@@ -1025,6 +1047,41 @@ class Pomodoro:
         long = self.number >= pomodoros_per_section
         self.begin('long_break' if long else 'short_break', long_break_minutes if long else short_break_minutes)
         bubble.show('Long break time!' if long else 'Break time!')
+
+    def sleep(self):
+        """Mac 要睡眠了：醒来之前不计时、不响铃"""
+        self.asleep_at = time.time()
+
+    def wake(self, slept_from=None):
+        """Mac 醒了：短睡当作暂停；长睡中断专注；休息照算，结束了就安静地说一句"""
+        start = slept_from if slept_from is not None else self.asleep_at
+        self.asleep_at, self.last_tick = None, time.time()
+        if start is None or not self.active or self.paused_left is not None:
+            return
+        slept = time.time() - start
+        if self.stage == 'focus':
+            if slept < sleep_pause_minutes * 60:
+                self.stage_end += slept  # 只合上一会儿：当作暂停
+                return
+            pomodoro_store.add_pomodoro(db, self.task_id, self.stage_start, start, 'interrupted',
+                                        self.section, self.number)
+            self.stage = 'interrupted'
+            bubble.show(f'Slept {fmt_slept(slept)}, focus interrupted')
+            check_card.show(interrupted=True)
+        elif self.stage in ('short_break', 'long_break') and self.left() <= 0:
+            if self.stage == 'long_break':  # 睡眠算休息；休息在睡觉时结束了：只响一声，不走到中间，不重复
+                self.section, self.number = self.section + 1, 0
+            self.start_focus()
+            play_sound('break_end')
+            bubble.show('Back to work!')
+
+    def restart_focus(self):
+        """睡眠中断后重新开始这个番茄"""
+        if self.stage != 'interrupted':
+            return
+        self.number -= 1
+        self.start_focus()
+        bubble.show(f'Focus {focus_minutes:g} min — go!')
 
     def toggle_pause(self):
         if self.paused_left is None:
@@ -1077,6 +1134,8 @@ class Pomodoro:
         name = self.task_name if len(self.task_name) <= 24 else self.task_name[:23] + '…'
         if self.stage == 'check':
             return f'🍅 {name} — waiting: task finished?'
+        if self.stage == 'interrupted':
+            return f'🍅 {name} — interrupted by sleep'
         if self.stage == 'focus':
             what = f'Focus {self.number}/{pomodoros_per_section}'
         else:
@@ -1104,21 +1163,55 @@ def play_sound(kind):
             break
     if sound is None:
         sound = AppKit.NSSound.soundNamed_(alarm_sounds[kind])
-    if sound is not None:
-        sound.stop()
-        sound.play()
-        playing_sounds[:] = [sound]  # 保持引用，播放完之前不被回收
+    if sound is None:
+        return
+    audio.keep(sound.duration() + 2.5)
+    if audio.ready():
+        start_sound(sound)
+    else:  # 输出刚刚打开：等 1 秒再放，声音开头才不会丢
+        AppHelper.callLater(1, start_sound, sound)
+
+def start_sound(sound):
+    sound.stop()
+    sound.play()
+    playing_sounds[:] = [sound]  # 保持引用，播放完之前不被回收
 
 playing_sounds = []
 
-def prewarm_audio():
-    """静音播放一下：第一次播放声音要先启动音频系统（约 0.25 秒），提前做掉"""
-    s = AppKit.NSSound.soundNamed_(alarm_sounds['warning']).copy()
-    s.setVolume_(0)
-    s.play()
-    warm_sounds[:] = [s]
+# 蓝牙耳机（比如 AirPods）没有声音时会关掉输出，下一个声音的开头（约 0.3–1 秒）就会丢失，短的声音会完全听不到。
+# 所以响铃前先放几秒无声的声音，让输出一直开着，声音放完再关。
+awake_lead = 3  # 响铃前多少秒开始放无声的声音
 
-warm_sounds = []
+class AudioKeeper:
+    def __init__(self):
+        self.silence = None   # 正在循环播放的无声声音
+        self.since = None     # 从什么时候开始放
+        self.until = 0        # 放到什么时候
+
+    def keep(self, seconds):
+        """让声音输出至少再开 seconds 秒"""
+        if muted:
+            return
+        now = time.time()
+        if self.silence is None:
+            s = AppKit.NSSound.soundNamed_(alarm_sounds['warning']).copy()
+            s.setVolume_(0)
+            s.setLoops_(True)
+            s.play()
+            self.silence, self.since = s, now
+        self.until = max(self.until, now + seconds)
+
+    def ready(self):
+        """输出已经开了至少 1 秒（蓝牙耳机准备好了）"""
+        return self.silence is not None and time.time() - self.since >= 1
+
+    def tick(self):
+        if self.silence is not None and time.time() >= self.until:
+            self.silence.stop()
+            self.silence = None
+            self.until = 0
+
+audio = AudioKeeper()
 
 class Alarm:
     def __init__(self):
@@ -1207,7 +1300,10 @@ class Alarm:
             self.last_ring = None
             if self.state == 'waiting':
                 self.done()
-        elif time.time() - self.last_ring >= alarm_repeat_every and self.repeats < alarm_repeat_max:
+        elif self.repeats < alarm_repeat_max and time.time() - self.last_ring >= alarm_repeat_every - awake_lead:
+            audio.keep(1)  # 快要再响了：先打开声音输出
+            if time.time() - self.last_ring < alarm_repeat_every:
+                return
             self.repeats += 1
             self.last_ring = time.time()
             play_sound(self.kind)
@@ -1387,9 +1483,11 @@ class CheckCard(AppKit.NSObject):
             pin_window(self.panel)
 
     @objc.python_method
-    def show(self):
+    def show(self, interrupted=False):
         self.close()
         w, h = 196, 74 + bubble_tail
+        question, left, right = (('Restart focus?', ('Restart', 'restart:', 90), ('Stop', 'stopTask:', 66)) if interrupted
+                                 else ('Task finished?', ('Done', 'done:', 74), ('Not yet', 'keepGoing:', 86)))
         self.panel = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             ((0, 0), (w, h)), AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
             AppKit.NSBackingStoreBuffered, False)
@@ -1405,11 +1503,11 @@ class CheckCard(AppKit.NSObject):
         view = SpeechBubbleView.alloc().initWithFrame_(((0, 0), (w, h)))
         q = AppKit.NSTextField.labelWithString_('')
         q.setAttributedStringValue_(AppKit.NSAttributedString.alloc().initWithString_attributes_(
-            'Task finished?', {AppKit.NSFontAttributeName: pixel_font(13), AppKit.NSForegroundColorAttributeName: ink_color}))
+            question, {AppKit.NSFontAttributeName: pixel_font(13), AppKit.NSForegroundColorAttributeName: ink_color}))
         q.setFrame_(((14, h - 34), (w - 28, 20)))
         view.addSubview_(q)
-        view.addSubview_(pixel_button('Done', ((14, bubble_tail + 12), (74, 26)), self, 'done:'))
-        view.addSubview_(pixel_button('Not yet', ((w - 14 - 86, bubble_tail + 12), (86, 26)), self, 'keepGoing:'))
+        view.addSubview_(pixel_button(left[0], ((14, bubble_tail + 12), (left[2], 26)), self, left[1]))
+        view.addSubview_(pixel_button(right[0], ((w - 14 - right[2], bubble_tail + 12), (right[2], 26)), self, right[1]))
         p.setContentView_(view)
         self.follow(force=True)
         if bubble.visible():
@@ -1448,6 +1546,14 @@ class CheckCard(AppKit.NSObject):
     def done_(self, sender):
         self.close()
         pomo.finish()
+
+    def restart_(self, sender):
+        self.close()
+        pomo.restart_focus()
+
+    def stopTask_(self, sender):
+        self.close()
+        pomo.stop()
 
 check_card = CheckCard.alloc().init()
 
@@ -1619,6 +1725,10 @@ class MenuController(AppKit.NSObject):
     def pausePomodoro_(self, sender):
         pomo.toggle_pause()
 
+    def restartFocus_(self, sender):
+        check_card.close()
+        pomo.restart_focus()
+
     def skipBreak_(self, sender):
         pomo.skip_break()
 
@@ -1639,6 +1749,19 @@ class MenuController(AppKit.NSObject):
         app.terminate_(None)
 
 controller = MenuController.alloc().init()
+
+class SleepWatcher(AppKit.NSObject):
+    """Mac 睡眠 / 醒来时通知番茄钟"""
+    def willSleep_(self, note):
+        pomo.sleep()
+
+    def didWake_(self, note):
+        pomo.wake()
+
+sleep_watcher = SleepWatcher.alloc().init()
+_ws_center = AppKit.NSWorkspace.sharedWorkspace().notificationCenter()
+_ws_center.addObserver_selector_name_object_(sleep_watcher, 'willSleep:', AppKit.NSWorkspaceWillSleepNotification, None)
+_ws_center.addObserver_selector_name_object_(sleep_watcher, 'didWake:', AppKit.NSWorkspaceDidWakeNotification, None)
 
 # 菜单栏图标：用 idle 第一帧缩成 20pt 高的小像素人
 icon_height = 20
@@ -1663,7 +1786,9 @@ def build_menu(m):
     m.addItem_(AppKit.NSMenuItem.separatorItem())
     if pomo.active:
         item(pomo.status(), enabled=False)
-        if pomo.stage != 'check':
+        if pomo.stage == 'interrupted':
+            item('Restart Focus', 'restartFocus:')
+        elif pomo.stage != 'check':
             item('Resume Pomodoro' if pomo.paused_left is not None else 'Pause Pomodoro', 'pausePomodoro:')
         if pomo.stage in ('short_break', 'long_break'):
             item('Skip Break', 'skipBreak:')
@@ -1687,6 +1812,7 @@ build_menu(menu)
 status_item.setMenu_(menu)
 
 # 启动循环
+audio.keep(1)  # 启动时先把声音系统准备好（第一次要约 0.3 秒），之后响铃不卡
 play('idle')
 AppHelper.callLater(tick, update)
 AppHelper.runEventLoop(installInterrupt=True)
