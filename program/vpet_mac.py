@@ -3,6 +3,7 @@ import datetime
 import math
 import os
 import random
+import sys
 import time
 
 import AppKit
@@ -15,6 +16,7 @@ from PyObjCTools import AppHelper
 import majima_db
 import notes_store
 import pomodoro_store
+import runtime_log
 
 
 # macOS 版本：系统自带的 Tk 无法在透明窗口中显示图片，所以这里直接用 Cocoa (PyObjC) 绘制
@@ -28,7 +30,12 @@ import pomodoro_store
 #   typing      （打字）    typing         —— 键盘在使用时：头上冒出 "…" 对话框
 #   notes       （记笔记）  notetake       —— 双击 Majima：停下准备记笔记；再单击一下弹出输入框
 
-impath = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'  # GIF 在项目根目录
+APP_VERSION = '1.0.0'
+packaged = bool(getattr(sys, 'frozen', False))  # 打包成独立 App（自带 Python）时为 True
+if packaged:  # GIF 和字体在 App 的 Contents/Resources 里
+    impath = os.environ.get('RESOURCEPATH', os.path.dirname(os.path.abspath(__file__))) + '/'
+else:         # 从源代码运行：GIF 在项目根目录
+    impath = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + '/'
 scale = 1  # 放大倍数（像素风格不会模糊）
 
 tick = 0.05             # 主循环间隔（秒）
@@ -370,6 +377,21 @@ def update():
             next_anim()
             return
     view.layer().setContents_(frames[frame])
+
+# 每一步都记下耗时（运行记录，见 runtime_log.py）
+_update_step = update
+
+def update():
+    t = time.perf_counter()
+    try:
+        _update_step()
+    except Exception as e:
+        runtime_log.error(type(e).__name__)
+        raise
+    finally:
+        visible = window.isVisible()
+        runtime_log.step(time.perf_counter() - t, idle_tick if paused or not visible else tick,
+                         mode, anim, visible, paused)
 
 # 可拖动、可双击的桌宠视图
 class PetView(AppKit.NSView):
@@ -977,6 +999,7 @@ class Pomodoro:
         if self.active:  # 已经有一个任务在进行：不再开第二个
             return
         self.task_id = pomodoro_store.start_task(db, task_name)
+        runtime_log.event('task_start')
         self.task_name = task_name.strip()
         self.active, self.section, self.number = True, 1, 0
         self.start_focus()
@@ -986,6 +1009,7 @@ class Pomodoro:
         self.begin('focus', focus_minutes)
 
     def begin(self, stage, minutes):
+        runtime_log.event('stage', stage=stage, minutes=minutes, section=self.section, number=self.number)
         self.stage, self.stage_start = stage, time.time()
         self.stage_length = minutes * 60
         self.stage_end = self.stage_start + self.stage_length
@@ -1051,6 +1075,7 @@ class Pomodoro:
     def sleep(self):
         """Mac 要睡眠了：醒来之前不计时、不响铃"""
         self.asleep_at = time.time()
+        runtime_log.event('sleep', stage=self.stage)
 
     def wake(self, slept_from=None):
         """Mac 醒了：短睡当作暂停；长睡中断专注；休息照算，结束了就安静地说一句"""
@@ -1059,6 +1084,7 @@ class Pomodoro:
         if start is None or not self.active or self.paused_left is not None:
             return
         slept = time.time() - start
+        runtime_log.event('wake', slept_s=round(slept), stage=self.stage, notice=slept_from is None)
         if self.stage == 'focus':
             if slept < sleep_pause_minutes * 60:
                 self.stage_end += slept  # 只合上一会儿：当作暂停
@@ -1109,6 +1135,7 @@ class Pomodoro:
         self.record_partial()
         pomodoro_store.finish_task(db, self.task_id, 'done')
         count, minutes = pomodoro_store.task_summary(db, self.task_id)
+        runtime_log.event('task_done', pomodoros=count, minutes=minutes, stage=self.stage)
         self.end_session()
         alarm.fire('task_done', f'Task complete! {count} pomodoro' + ('' if count == 1 else 's') + f' · {minutes} min')
 
@@ -1117,6 +1144,7 @@ class Pomodoro:
             return
         self.record_partial()
         pomodoro_store.finish_task(db, self.task_id, 'stopped')
+        runtime_log.event('task_stopped', stage=self.stage)
         self.end_session()
         bubble.show('Pomodoro stopped')
 
@@ -1146,7 +1174,8 @@ class Pomodoro:
 pomo = Pomodoro()
 
 # ---------------- 闹钟：声音 + Majima 走到屏幕中间表演，然后走回原位 ----------------
-sound_dir = impath + 'sounds/'
+sound_dir = (os.path.expanduser('~/Library/Application Support/MajimaVpet/sounds/') if packaged
+             else impath + 'sounds/')  # 自己的闹钟声音（打包后的 App 里不能放文件）
 sound_files = {'focus_end': 'focus-end', 'break_end': 'break-end', 'warning': 'warning', 'task_done': 'task-done'}
 alarm_art = {'focus_end': 'focus-end', 'break_end': 'alarm-work', 'task_done': 'alarm-done'}
 alarm_text = {'focus_end': 'Pomodoro done!', 'break_end': 'Back to work!', 'task_done': 'Task complete!'}
@@ -1166,6 +1195,8 @@ def play_sound(kind):
     if sound is None:
         return
     audio.keep(sound.duration() + 2.5)
+    runtime_log.event('sound', kind=kind, custom=sound.name() is None, output=runtime_log.audio_output(),
+                      output_warm_s=round(time.time() - audio.since, 1), waited=not audio.ready())
     if audio.ready():
         start_sound(sound)
     else:  # 输出刚刚打开：等 1 秒再放，声音开头才不会丢
@@ -1222,6 +1253,7 @@ class Alarm:
 
     def warn(self):
         """休息快结束：轻轻响一声，原地说一句"""
+        runtime_log.event('alarm', kind='warning')
         play_sound('warning')
         n, unit = (warning_seconds // 60, 'minute') if warning_seconds >= 60 else (warning_seconds, 'second')
         bubble.show(f'{n} {unit}' + ('' if n == 1 else 's') + ' left')
@@ -1230,6 +1262,7 @@ class Alarm:
         """时间到（专注 / 休息结束）：响铃，Majima 走到屏幕中间表演；任务完成：原地庆祝"""
         self.kind, self.text = kind, text or alarm_text[kind]
         self.last_ring, self.repeats = time.time(), 0
+        runtime_log.event('alarm', kind=kind)
         play_sound(kind)
         if kind == 'task_done':
             self.celebrate_here()
@@ -1297,6 +1330,8 @@ class Alarm:
         if self.last_ring is None or self.kind == 'task_done':
             return
         if self.user_back():
+            runtime_log.event('user_back', kind=self.kind, after_s=round(time.time() - self.last_ring),
+                              repeats=self.repeats)
             self.last_ring = None
             if self.state == 'waiting':
                 self.done()
@@ -1305,6 +1340,7 @@ class Alarm:
             if time.time() - self.last_ring < alarm_repeat_every:
                 return
             self.repeats += 1
+            runtime_log.event('alarm_repeat', kind=self.kind, n=self.repeats)
             self.last_ring = time.time()
             play_sound(self.kind)
             self.go_to_centre()
@@ -1745,7 +1781,13 @@ class MenuController(AppKit.NSObject):
     def menuNeedsUpdate_(self, m):
         build_menu(m)
 
+    def exportRuntime_(self, sender):
+        path = runtime_log.export(APP_VERSION, screen_sizes())
+        AppKit.NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_([NSURL.fileURLWithPath_(path)])
+        bubble.show('Saved to Desktop')
+
     def quit_(self, sender):
+        runtime_log.quit()
         app.terminate_(None)
 
 controller = MenuController.alloc().init()
@@ -1803,6 +1845,7 @@ def build_menu(m):
     item('Show Majima' if not window.isVisible() else 'Hide Majima', 'toggleVisible:', 'h')
     item('Resume' if paused else 'Pause', 'togglePause:', 'p')
     m.addItem_(AppKit.NSMenuItem.separatorItem())
+    item('Export Runtime Data…', 'exportRuntime:')
     item('Quit MajimaVpet', 'quit:', 'q')
 
 menu = AppKit.NSMenu.alloc().init()
@@ -1812,6 +1855,11 @@ build_menu(menu)
 status_item.setMenu_(menu)
 
 # 启动循环
+def screen_sizes():
+    return [f'{s.frame().size.width:.0f}x{s.frame().size.height:.0f}@{s.backingScaleFactor():.0f}x'
+            for s in AppKit.NSScreen.screens()]
+
+runtime_log.start(APP_VERSION, screen_sizes())
 audio.keep(1)  # 启动时先把声音系统准备好（第一次要约 0.3 秒），之后响铃不卡
 play('idle')
 AppHelper.callLater(tick, update)

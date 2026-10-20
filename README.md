@@ -109,6 +109,7 @@ Click the little Majima icon in the menu bar:
 - **Notebook…** (⌘B): browse, search and delete saved notes
 - **Hide / Show Majima** (⌘H)
 - **Pause / Resume** (⌘P): freezes the animation
+- **Export Runtime Data…**: saves a zip to your Desktop with how Majima has been running (speed, memory, alarms, sleep). It stays offline and contains no notes or task names.
 - **Quit MajimaVpet** (⌘Q)
 
 > On macOS 26+, if the icon doesn't appear, enable the app under **System Settings → Menu Bar → Allow in the Menu Bar**.
@@ -160,6 +161,7 @@ program/vpet_mac.py    the pet: Cocoa window, animation state machine, menu bar 
 program/majima_db.py   shared local database (majima.db); each feature keeps its own tables
 program/notes_store.py notebook tables: notes, labels, full-text search
 program/pomodoro_store.py pomodoro history tables: tasks, pomodoros
+program/runtime_log.py offline runtime record (events, per-minute performance) and its export
 fonts/                 Silkscreen pixel font for Majima's messages (SIL Open Font License, see fonts/OFL.txt)
 majima-*.gif           sprite animations (80×92; typing, notetake and Pomodoro art are 160×92)
 ```
