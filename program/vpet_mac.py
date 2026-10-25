@@ -321,6 +321,8 @@ def update():
         play(pomo.current_art())  # 每 5 分钟换一张画
     if mode == 'alarm':
         alarm.walk_step()  # 走到屏幕中间 / 走回原位
+    elif pomo.stage in ('check', 'interrupted') and check_card.panel is None:
+        check_card.show(interrupted=pomo.stage == 'interrupted')  # 等你回答时，问题一定要在屏幕上
     bubble.follow()
     check_card.follow()
 
@@ -410,6 +412,8 @@ class PetView(AppKit.NSView):
             if math.hypot(mouse.x - press_point.x, mouse.y - press_point.y) < drag_threshold:
                 return  # 还不算拖动
             drag_started = True
+            if mode == 'alarm':
+                alarm.dismiss()  # 闹钟表演时被拎起来：和点一下一样，先结束这次提醒
             if mode != 'note':  # 输入框打开时不换成 "!"，保持记笔记的样子
                 mode = 'dragging'
                 play('shock', loops=1)  # 被拎起来："!"（可能改变窗口大小，所以之后再算偏移）
@@ -1282,9 +1286,10 @@ class Alarm:
 
     def go_to_centre(self):
         global mode
-        if self.state in ('acting', 'waiting'):  # 已经在中间了：直接再表演一次
+        if self.state in ('acting', 'waiting') and mode == 'alarm':  # 已经在中间了：直接再表演一次
             self.act()
             return
+        self.state = None  # 上一次提醒没正常结束（比如被拖走）：重新开始
         if not self.can_walk():  # 不方便走动（比如正在记笔记）：原地提醒
             if self.kind == 'focus_end':
                 self.after_act()
