@@ -32,16 +32,29 @@ The pet window floats above other windows and stays in the same spot on every de
 
 ## Notebook
 
-### Write a note
+### Write notes
 
-**Double-click Majima → click him again (within 10s) → write → choose:**
+**Double-click Majima → click him again (within 10s) → a notebook page opens → write → choose:**
 
 | Key / button | Result |
 |---|---|
-| **Enter** or **Save** | Saved to your notebook, with date, time and `#labels` |
+| **Enter** or **Save** | Saved to your notebook, with date and time. The page clears and stays open for the next entry |
 | **⌥↩** | New line (e.g. the word's meaning) |
-| **Quick** | Yellow sticky on screen until you close it, not saved unless you click its **Save** |
-| **Esc** | Discarded |
+| **Quick** | Sticky in the page's colour, on screen until you close it, not saved unless you click its **Save** |
+| **＋ Page** | Opens another page beside it, up to 3 |
+| **Esc** or ✕ | Closes the page (unsaved text is discarded) |
+
+### Up to three pages while you read
+
+| Page | Colour | Use it for | Label on saved notes |
+|---|---|---|---|
+| **Notes** | Yellow | Useful content from a book or web page | `#notes` |
+| **Words** | Green | New words from the same material | `#words` |
+| **Ideas** | Pink | Your own ideas | `#ideas` |
+
+- **Click a page's title to rename it**. Notes you save afterwards get the new name as their label, and the name is remembered.
+- Drag each page anywhere, e.g. next to your book or browser. Pages don't move with Majima.
+- `#tags` you type are added as extra labels.
 
 ### Read your notes
 

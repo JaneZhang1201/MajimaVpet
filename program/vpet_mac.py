@@ -1,8 +1,10 @@
 import ctypes
 import datetime
+import json
 import math
 import os
 import random
+import re
 import sys
 import time
 
@@ -326,8 +328,6 @@ def update():
     bubble.follow()
     check_card.follow()
 
-    if mode == 'note' and note_box is not None:
-        note_box.follow_panel()  # 笔记本被拖走时，Majima 跟上
     if task_box is not None:
         task_box.follow_panel()  # 任务名输入页被拖走时，Majima 跟上
 
@@ -419,9 +419,7 @@ class PetView(AppKit.NSView):
                 play('shock', loops=1)  # 被拎起来："!"（可能改变窗口大小，所以之后再算偏移）
             drag_offset = (mouse.x - pos[0], mouse.y - pos[1])
         x, y = clamp_origin(mouse.x - drag_offset[0], mouse.y - drag_offset[1], screen_area(mouse))
-        if mode == 'note' and note_box is not None:
-            note_box.move_together(x, y)  # 移动笔记本，Majima 作为子窗口一起走
-        elif task_box is not None:
+        if task_box is not None:
             task_box.move_together(x, y)  # 移动任务名输入页，Majima 一起走
         else:
             move_to(x, y)
@@ -451,7 +449,6 @@ drag_offset = (0, 0)
 db = majima_db.open_db()  # 共享数据库 majima.db（笔记本、之后的番茄钟各用自己的表）
 notes_store.setup(db)
 pomodoro_store.setup(db)
-note_box = None       # 当前打开的输入框控制器
 stickies = []         # 屏幕上的便利贴（保持引用，避免被回收）
 
 def make_button(title, frame, target, action):
@@ -482,7 +479,7 @@ note_font = AppKit.NSFont.systemFontOfSize_(15)
 line_h = 22              # 横线间距 = 行高
 paper_inset = (24, 4)    # 文字离纸边的距离（左边留出页边线）
 
-def setup_panel(panel, title):
+def setup_panel(panel, title, color=None):
     panel.setTitle_(title)
     panel.setLevel_(AppKit.NSStatusWindowLevel)
     panel.setHidesOnDeactivate_(False)
@@ -492,14 +489,15 @@ def setup_panel(panel, title):
                                  | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
                                  | AppKit.NSWindowCollectionBehaviorIgnoresCycle)
     panel.setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameAqua))  # 纸张总用浅色，深色模式下也看得清
-    panel.setBackgroundColor_(paper_color)
+    panel.setBackgroundColor_(color or paper_color)
 
 paper_placeholders = {}  # 每张纸自己的提示文字（默认是记笔记的提示）
+paper_colors = {}        # 每张纸自己的颜色（默认浅黄）
 
 # 画着横线的文字区域（输入框和便利贴共用）
 class PaperTextView(AppKit.NSTextView):
     def drawViewBackgroundInRect_(self, rect):
-        paper_color.setFill()
+        paper_colors.get(objc.pyobjc_id(self), paper_color).setFill()
         AppKit.NSRectFill(rect)
         b = self.bounds()
         rule_color.setStroke()
@@ -554,96 +552,156 @@ class NotePanel(AppKit.NSPanel):
     def canBecomeKeyWindow(self):
         return True
 
-    def cancelOperation_(self, sender):  # Esc：丢弃
-        if note_box is not None:
-            note_box.discard_(None)
+    def cancelOperation_(self, sender):  # Esc：关掉这一页（没保存的字丢掉）
+        if self.delegate() is not None:
+            self.delegate().close_(None)
 
-# 输入框：一页笔记纸。回车 = Save 保存到笔记本，⌥回车 = 换行，Quick 变成便利贴，Esc 丢弃
+# ---------------- 笔记页：最多同时开 3 页，比如 摘录 / 生词 / 想法 ----------------
+# 每页一种颜色，点标题可以改名；回车把这一条存进笔记本（标签 = 页名），页面留着继续写。
+# 页面不跟着 Majima 走，可以各自拖到书或网页旁边。
+page_slots = [  # 第 1–3 页：默认名字、纸的颜色、提示文字
+    ('Notes', paper_color, 'Note from your reading…'),
+    ('Words', AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(0.80, 0.95, 0.80, 1.0), 'New word…'),
+    ('Ideas', AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 0.85, 0.88, 1.0), 'An idea…'),
+]
+max_pages = len(page_slots)
+note_pages = []  # 打开着的笔记页
+settings_path = os.path.join(os.path.dirname(majima_db.DB_PATH), 'settings.json')
+
+def load_settings():
+    try:
+        with open(settings_path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+def save_setting(key, value):
+    data = load_settings()
+    data[key] = value
+    try:
+        with open(settings_path, 'w') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+def page_name(slot):
+    names = load_settings().get('page_names', [])
+    return names[slot] if slot < len(names) and names[slot] else page_slots[slot][0]
+
+def page_label(name):
+    """页名变成笔记的标签：'New words' → new_words"""
+    return re.sub(r'\W+', '_', name.strip().lower()).strip('_') or 'notes'
+
 class NoteBox(AppKit.NSObject):
     @objc.python_method
-    def open(self):
-        w, paper_h = 300, 3 * line_h + 2 * paper_inset[1]
-        h = paper_h + 46
-        self.done = False
+    def open(self, slot, beside=None):
+        self.slot, self.saved, self.done = slot, 0, False
+        default, color, placeholder = page_slots[slot]
+        self.name = page_name(slot)
+        w, paper_h, head_h, foot_h = 300, 4 * line_h + 2 * paper_inset[1], 30, 46
+        h = foot_h + paper_h + head_h
         self.panel = NotePanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            ((0, 0), (w, h)), AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskUtilityWindow
+            ((0, 0), (w, h)), AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable
+            | AppKit.NSWindowStyleMaskUtilityWindow
             | AppKit.NSWindowStyleMaskNonactivatingPanel,  # 能打字，但不把本 App 切到前台
             AppKit.NSBackingStoreBuffered, False)
-        setup_panel(self.panel, "Majima's notebook")
+        setup_panel(self.panel, self.name, color)
+        self.panel.setTitleVisibility_(AppKit.NSWindowTitleHidden)  # 名字显示在纸上，点一下就能改
         content = self.panel.contentView()
-        scroll = AppKit.NSScrollView.alloc().initWithFrame_(((0, 46), (w, paper_h)))
+        # 页名：点一下改名，回车确定
+        self.title = AppKit.NSTextField.alloc().initWithFrame_(((paper_inset[0] - 2, foot_h + paper_h + 4), (w - 140, 22)))
+        self.title.setStringValue_(self.name)
+        self.title.setBezeled_(False)
+        self.title.setDrawsBackground_(False)
+        self.title.setEditable_(True)
+        self.title.setFont_(AppKit.NSFont.boldSystemFontOfSize_(15))
+        self.title.setTextColor_(ink_color)
+        self.title.setToolTip_('Click to rename this page')
+        self.title.setDelegate_(self)
+        content.addSubview_(self.title)
+        keys = AppKit.NSTextField.labelWithString_('↩ save · ⌥↩ new line')
+        keys.setFrame_(((w - 122, foot_h + paper_h + 8), (112, 14)))
+        keys.setAlignment_(AppKit.NSTextAlignmentRight)
+        keys.setTextColor_(AppKit.NSColor.colorWithWhite_alpha_(0.35, 0.8))
+        keys.setFont_(AppKit.NSFont.systemFontOfSize_(10))
+        content.addSubview_(keys)
+        scroll = AppKit.NSScrollView.alloc().initWithFrame_(((0, foot_h), (w, paper_h)))
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
         scroll.setDrawsBackground_(False)
         self.paper = make_paper(((0, 0), scroll.contentSize()), '', editable=True)
+        paper_colors[objc.pyobjc_id(self.paper)] = color
+        paper_placeholders[objc.pyobjc_id(self.paper)] = placeholder
         self.paper.setDelegate_(self)
         scroll.setDocumentView_(self.paper)
         content.addSubview_(scroll)
-        hint = AppKit.NSTextField.labelWithString_('Esc discard · ⌥↩ new line')
-        hint.setFrame_(((10, 14), (136, 16)))
-        hint.setTextColor_(AppKit.NSColor.colorWithWhite_alpha_(0.35, 0.8))
-        hint.setFont_(AppKit.NSFont.systemFontOfSize_(10))
-        content.addSubview_(hint)
+        self.add_button = make_button('＋ Page', ((8, 8), (76, 30)), self, 'addPage:')
+        content.addSubview_(self.add_button)
+        self.count = AppKit.NSTextField.labelWithString_('')
+        self.count.setFrame_(((88, 15), (60, 16)))
+        self.count.setTextColor_(AppKit.NSColor.colorWithWhite_alpha_(0.35, 0.8))
+        self.count.setFont_(AppKit.NSFont.systemFontOfSize_(11))
+        content.addSubview_(self.count)
         content.addSubview_(make_button('Quick', ((w - 156, 8), (72, 30)), self, 'quick:'))
         save = make_button('Save', ((w - 82, 8), (72, 30)), self, 'save:')
         save.setKeyEquivalent_('\r')
         content.addSubview_(save)
-        place_above_majima(self.panel)
-        o = self.panel.frame().origin
-        self.offset = (o.x - pos[0], o.y - pos[1])  # 笔记本相对 Majima 的位置，拖动时保持不变
+        if beside is None:
+            place_above_majima(self.panel)
+        else:
+            place_beside(self.panel, beside)
         self.panel.setDelegate_(self)
         self.panel.makeKeyAndOrderFront_(None)
         pin_window(self.panel)
-        self.panel.addChildWindow_ordered_(window, AppKit.NSWindowAbove)  # Majima 跟着笔记本移动
         self.panel.makeFirstResponder_(self.paper)
 
-    # Majima 是笔记本的子窗口：系统会让他们一起移动，拖笔记本标题栏时也没有延迟。
-    # 拖 Majima 时，把笔记本移到对应位置，Majima 自然跟着走
-    @objc.python_method
-    def move_together(self, x, y):
-        if self.done:
-            return
-        self.panel.setFrameOrigin_((x + self.offset[0], y + self.offset[1]))
-        self.follow_panel()
-
-    # 根据 Majima 窗口的实际位置更新 pos（笔记本被拖动后）
-    @objc.python_method
-    def follow_panel(self):
-        global shown_pos
-        if self.done:
-            return
-        f = window.frame().origin
-        if (round(f.x), round(f.y)) != shown_pos:
-            pos[0], pos[1] = f.x, f.y
-            shown_pos = (round(f.x), round(f.y))
-
-    def windowDidMove_(self, notification):
-        self.follow_panel()
-
-    # 回车保存、⌥回车换行、Esc 丢弃
+    # 回车保存、⌥回车换行、Esc 关掉这一页
     def textView_doCommandBySelector_(self, text_view, selector):
         selector = selector.decode() if isinstance(selector, bytes) else str(selector)
         if selector == 'insertNewline:':
             self.save_(None)
             return True
         if selector in ('cancelOperation:', 'complete:'):
-            self.discard_(None)
+            self.close_(None)
             return True
         return False
 
     def textDidChange_(self, notification):
         self.paper.setNeedsDisplay_(True)  # 让提示文字及时消失/出现
 
+    # 改页名：回车或点别处时确定；以后存的笔记用新名字做标签
+    def controlTextDidEndEditing_(self, notification):
+        name = self.title.stringValue().strip()
+        if not name:
+            self.title.setStringValue_(self.name)
+            return
+        self.name = name
+        self.panel.setTitle_(name)
+        names = load_settings().get('page_names', [])
+        names += [''] * (max_pages - len(names))
+        names[self.slot] = name
+        save_setting('page_names', names)
+        self.panel.makeFirstResponder_(self.paper)  # 改完名接着写
+
+    @objc.python_method
+    def label(self):
+        return page_label(self.name)
+
     def save_(self, sender):
+        global typing_ignore_until
         if self.done:
             return
         text = self.paper.string()
         if text.strip():
-            notes_store.add_note(db, text, kind='word')
+            notes_store.add_note(db, text, kind=self.label())
             notebook.reload()
-            self.finish(saved=True)
-        else:
-            self.finish()
+            self.saved += 1
+            self.count.setStringValue_(f'{self.saved} saved')
+            self.paper.setString_('')  # 页面留着，接着写下一条
+            self.paper.setNeedsDisplay_(True)
+            typing_ignore_until = time.monotonic() + typing_after + 0.2
+            if mode in ('steady', 'showtime', 'typing'):
+                play('change')  # 闪光：保存成功
 
     def quick_(self, sender):
         if self.done:
@@ -651,45 +709,88 @@ class NoteBox(AppKit.NSObject):
         text = self.paper.string()
         if text.strip():
             sticky = Sticky.alloc().init()
-            sticky.open(text, self.panel.frame())
+            sticky.open(text, self.panel.frame(), page_slots[self.slot][1], self.label())
             stickies.append(sticky)
-        self.finish()
+            # 便利贴放在这一页上面（上面放不下就放下面），不挡住正在写的页
+            f, sf = self.panel.frame(), sticky.panel.frame()
+            area = screen_area(AppKit.NSMakePoint(f.origin.x + 1, f.origin.y + 1))
+            y = f.origin.y + f.size.height + 8
+            if y + sf.size.height > area.origin.y + area.size.height:
+                y = max(f.origin.y - sf.size.height - 8, area.origin.y)
+            sticky.panel.setFrameOrigin_((f.origin.x, y))
+            self.paper.setString_('')
+            self.paper.setNeedsDisplay_(True)
 
-    def discard_(self, sender):
-        self.finish()
+    def addPage_(self, sender):
+        open_note_page(beside=self.panel)
 
-    @objc.python_method
-    def finish(self, saved=False):
-        global mode, note_box, typing_ignore_until
+    def close_(self, sender):
+        self.panel.close()  # 由 windowWillClose_ 收尾
+
+    def windowWillClose_(self, notification):
+        global typing_ignore_until
         if self.done:
             return
-        self.follow_panel()
         self.done = True
-        self.panel.removeChildWindow_(window)
-        self.panel.orderOut_(None)
-        move_to(*clamp_origin(pos[0], pos[1], screen_area()))
-        note_box = None
+        if self in note_pages:
+            note_pages.remove(self)
+        update_page_buttons()
         typing_ignore_until = time.monotonic() + typing_after + 0.2  # 刚才的按键不算"正在打字"
-        mode = 'steady'
-        if saved:
-            play('change')  # 闪光：保存成功
-        else:
-            next_anim()
+
+def place_beside(panel, other):
+    """新的一页放在已开的页旁边：先试最右边那页的右边，放不下就放最左边那页的左边；顶部和点了"＋ Page"的那页对齐"""
+    f, o = panel.frame(), other.frame()
+    area = screen_area(AppKit.NSMakePoint(o.origin.x + 1, o.origin.y + 1))
+    frames = [p.panel.frame() for p in note_pages if p.panel is not panel]
+    right = max(r.origin.x + r.size.width for r in frames) + 8
+    left = min(r.origin.x for r in frames) - f.size.width - 8
+    if right + f.size.width <= area.origin.x + area.size.width:
+        x = right
+    elif left >= area.origin.x:
+        x = left
+    else:  # 两边都放不下（屏幕太窄）：错开一点叠在上面
+        x = o.origin.x + 30
+    x = min(max(x, area.origin.x), area.origin.x + area.size.width - f.size.width)
+    panel.setFrameTopLeftPoint_((x, o.origin.y + o.size.height))
+
+def update_page_buttons():
+    """开满 3 页时，"＋ Page" 变灰"""
+    for p in note_pages:
+        p.add_button.setEnabled_(len(note_pages) < max_pages)
+
+def open_note_page(beside=None):
+    """打开下一张没开的页（最多 3 页）"""
+    used = {p.slot for p in note_pages}
+    free = [i for i in range(max_pages) if i not in used]
+    if not free:
+        return None
+    page = NoteBox.alloc().init()
+    note_pages.append(page)
+    page.open(free[0], beside)
+    update_page_buttons()
+    return page
 
 def open_note_box():
-    global mode, note_box
-    mode = 'note'
-    play('notetake')
-    note_box = NoteBox.alloc().init()
-    note_box.open()
+    """双击 Majima 再点一下：打开第一页；已经开着的话，把它们拿到最前面"""
+    global mode
+    mode = 'steady'
+    next_anim()
+    if note_pages:
+        for p in note_pages:
+            p.panel.orderFrontRegardless()
+        note_pages[-1].panel.makeKeyAndOrderFront_(None)
+        return
+    open_note_page()
 
 # 便利贴：和输入框同一张笔记纸，显示 Quick 的内容直到关闭；也可以之后再点 Save 存进笔记本
 class Sticky(AppKit.NSObject):
     @objc.python_method
-    def open(self, text, box_frame):
-        self.text = text
+    def open(self, text, box_frame, color=None, label='notes'):
+        self.text, self.label = text, label
         w = 300
         paper = make_paper(((0, 0), (w, line_h)), text, editable=False)
+        if color is not None:
+            paper_colors[objc.pyobjc_id(paper)] = color
         paper.layoutManager().ensureLayoutForTextContainer_(paper.textContainer())
         used = paper.layoutManager().usedRectForTextContainer_(paper.textContainer())
         paper_h = max(line_h, used.size.height) + 2 * paper_inset[1]
@@ -699,7 +800,7 @@ class Sticky(AppKit.NSObject):
             AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable
             | AppKit.NSWindowStyleMaskUtilityWindow | AppKit.NSWindowStyleMaskNonactivatingPanel,
             AppKit.NSBackingStoreBuffered, False)
-        setup_panel(self.panel, 'Quick note')
+        setup_panel(self.panel, 'Quick note', color)
         self.panel.setDelegate_(self)
         content = self.panel.contentView()
         paper.setFrame_(((0, 46), (w, paper_h)))
@@ -712,7 +813,7 @@ class Sticky(AppKit.NSObject):
         pin_window(self.panel)
 
     def save_(self, sender):
-        notes_store.add_note(db, self.text, kind='word')
+        notes_store.add_note(db, self.text, kind=self.label)
         notebook.reload()
         self.panel.close()
 
