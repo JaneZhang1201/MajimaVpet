@@ -515,11 +515,79 @@ def setup_panel(panel, title, color=None):
     panel.setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameAqua))  # 纸张总用浅色，深色模式下也看得清
     panel.setBackgroundColor_(color or paper_color)
 
+# ⌘C / ⌘V / ⌘X / ⌘A / ⌘Z / ⇧⌘Z：本 App 没有显示菜单栏，系统找不到"编辑"菜单，这里直接把快捷键交给正在输入的文字框
+edit_keys = {'c': 'copy:', 'v': 'paste:', 'x': 'cut:', 'a': 'selectAll:', 'z': 'undo:'}
+
+def handle_edit_key(window, event):
+    flags = event.modifierFlags() & AppKit.NSEventModifierFlagDeviceIndependentFlagsMask
+    if not flags & AppKit.NSEventModifierFlagCommand or flags & (AppKit.NSEventModifierFlagControl
+                                                               | AppKit.NSEventModifierFlagOption):
+        return False
+    key = (event.charactersIgnoringModifiers() or '').lower()
+    action = 'redo:' if key == 'z' and flags & AppKit.NSEventModifierFlagShift else edit_keys.get(key)
+    responder = window.firstResponder()
+    return bool(action) and responder is not None and responder.tryToPerform_with_(action, window)
+
+class EditPanel(AppKit.NSPanel):
+    """能打字、能用编辑快捷键的面板（笔记页、便利贴、任务名输入页）"""
+    def canBecomeKeyWindow(self):
+        return True
+
+    def performKeyEquivalent_(self, event):
+        return handle_edit_key(self, event) or objc.super(EditPanel, self).performKeyEquivalent_(event)
+
+class EditWindow(AppKit.NSWindow):
+    """笔记本窗口：同样支持编辑快捷键"""
+    def performKeyEquivalent_(self, event):
+        return handle_edit_key(self, event) or objc.super(EditWindow, self).performKeyEquivalent_(event)
+
+# 中文等输入法的候选框：Majima 的窗口在"固定空间"里，比普通窗口高一层，候选框会被挡住。
+# 输入法按照"光标在哪里"来摆候选框，所以告诉它一个页面下面（放不下就上面）的空位置，
+# 避开笔记页、便利贴和 Majima。
+ime_box_h = 90  # 给候选框留的高度
+
+def ime_anchor(view, caret):
+    win = view.window()
+    if win is None:
+        return caret
+    page = win.frame()
+    area = screen_area(AppKit.NSMakePoint(page.origin.x + 1, page.origin.y + 1))
+    x0, x1 = caret.origin.x - 20, caret.origin.x + 360  # 候选框大概的宽度
+    others = [w.frame() for w in AppKit.NSApp.windows()
+              if w.isVisible() and w.className() != 'NSStatusBarWindow' and w.level() < AppKit.NSPopUpMenuWindowLevel]
+    def blocked(lo, hi):
+        return [f for f in others if f.origin.x < x1 and f.origin.x + f.size.width > x0
+                and f.origin.y < hi and f.origin.y + f.size.height > lo]
+    y = page.origin.y  # 先试页面下面：候选框的顶边对着 y
+    while (hit := blocked(y - ime_box_h, y)):
+        y = min(f.origin.y for f in hit)
+    if y - ime_box_h >= area.origin.y:
+        return AppKit.NSMakeRect(caret.origin.x, y, caret.size.width, caret.size.height)
+    y = page.origin.y + page.size.height  # 下面放不下：放上面
+    while (hit := blocked(y, y + ime_box_h)):
+        y = max(f.origin.y + f.size.height for f in hit)
+    if y + ime_box_h <= area.origin.y + area.size.height:
+        return AppKit.NSMakeRect(caret.origin.x, y + ime_box_h, caret.size.width, caret.size.height)
+    return caret
+
+class IMEFieldEditor(AppKit.NSTextView):
+    """页名之类的一行输入框也用同样的候选框位置"""
+    def firstRectForCharacterRange_actualRange_(self, rng, actual):
+        rect, actual = objc.super(IMEFieldEditor, self).firstRectForCharacterRange_actualRange_(rng, actual)
+        return ime_anchor(self, rect), actual
+
+ime_field_editor = IMEFieldEditor.alloc().initWithFrame_(((0, 0), (10, 10)))
+ime_field_editor.setFieldEditor_(True)
+
 paper_placeholders = {}  # 每张纸自己的提示文字（默认是记笔记的提示）
 paper_colors = {}        # 每张纸自己的颜色（默认浅黄）
 
 # 画着横线的文字区域（输入框和便利贴共用）
 class PaperTextView(AppKit.NSTextView):
+    def firstRectForCharacterRange_actualRange_(self, rng, actual):
+        rect, actual = objc.super(PaperTextView, self).firstRectForCharacterRange_actualRange_(rng, actual)
+        return ime_anchor(self, rect), actual
+
     def drawViewBackgroundInRect_(self, rect):
         paper_colors.get(objc.pyobjc_id(self), paper_color).setFill()
         AppKit.NSRectFill(rect)
@@ -563,6 +631,7 @@ def make_paper(frame, text, editable):
     tv.textStorage().setAttributedString_(paper_string(text))
     tv.setInsertionPointColor_(ink_color)
     tv.setEditable_(editable)
+    tv.setAllowsUndo_(editable)  # ⌘Z 撤销
     tv.setSelectable_(True)
     tv.setVerticallyResizable_(True)
     tv.setHorizontallyResizable_(False)
@@ -572,10 +641,7 @@ def make_paper(frame, text, editable):
     tv.textContainer().setWidthTracksTextView_(True)
     return tv
 
-class NotePanel(AppKit.NSPanel):
-    def canBecomeKeyWindow(self):
-        return True
-
+class NotePanel(EditPanel):
     def cancelOperation_(self, sender):  # Esc：关掉这一页（没保存的字丢掉）
         if self.delegate() is not None:
             self.delegate().close_(None)
@@ -692,6 +758,9 @@ class NoteBox(AppKit.NSObject):
 
     def textDidChange_(self, notification):
         self.paper.setNeedsDisplay_(True)  # 让提示文字及时消失/出现
+
+    def windowWillReturnFieldEditor_toObject_(self, window, obj):
+        return ime_field_editor if obj is self.title else None
 
     # 改页名：回车或点别处时确定；以后存的笔记用新名字做标签
     def controlTextDidEndEditing_(self, notification):
@@ -819,7 +888,7 @@ class Sticky(AppKit.NSObject):
         used = paper.layoutManager().usedRectForTextContainer_(paper.textContainer())
         paper_h = max(line_h, used.size.height) + 2 * paper_inset[1]
         h = paper_h + 46
-        self.panel = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        self.panel = EditPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             ((0, 0), (w, h)),
             AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable
             | AppKit.NSWindowStyleMaskUtilityWindow | AppKit.NSWindowStyleMaskNonactivatingPanel,
@@ -880,7 +949,7 @@ class Notebook(AppKit.NSObject):
     def build(self):
         W, H = 760, 480
         R = AppKit  # 简写
-        self.window = R.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        self.window = EditWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             ((0, 0), (W, H)),
             R.NSWindowStyleMaskTitled | R.NSWindowStyleMaskClosable | R.NSWindowStyleMaskResizable
             | R.NSWindowStyleMaskMiniaturizable, R.NSBackingStoreBuffered, False)
@@ -1724,10 +1793,7 @@ class CheckCard(AppKit.NSObject):
 check_card = CheckCard.alloc().init()
 
 # ---------------- 开始番茄钟：输入任务名 ----------------
-class TaskPanel(AppKit.NSPanel):
-    def canBecomeKeyWindow(self):
-        return True
-
+class TaskPanel(EditPanel):
     def cancelOperation_(self, sender):  # Esc：取消
         if task_box is not None:
             task_box.cancel_(None)
