@@ -121,7 +121,7 @@ Click the little Majima icon in the menu bar:
 
 - **Notebook…** (⌘B): browse, search and delete saved notes
 - **Hide / Show Majima** (⌘H)
-- **Pause / Resume** (⌘P): freezes the animation
+- **Pause / Resume** (⌘P): Majima stands still (no walking or dancing) but still types along and reacts when dragged
 - **Export Runtime Data…**: saves a zip to your Desktop with how Majima has been running (speed, memory, alarms, sleep). It stays offline and contains no notes or task names.
 - **Quit MajimaVpet** (⌘Q)
 

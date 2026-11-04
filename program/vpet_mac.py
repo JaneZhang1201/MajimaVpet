@@ -256,6 +256,8 @@ def next_anim():
         play(pomo.current_art())
     elif mode == 'alarm':
         play(anim, loops=1000)  # 闹钟期间保持当前动画
+    elif mode == 'steady' and paused:
+        play('idle')  # 暂停中：站着不动
     elif mode == 'steady':
         if cursor_moving():
             mode = 'showtime'
@@ -300,14 +302,36 @@ def clamp_origin(x, y, area):
     y = min(max(y, area.origin.y), area.origin.y + area.size.height - height)
     return x, y
 
+# 暂停时：站着不动（平时的站姿，番茄钟进行中就是番茄钟的画），不走路、不跳舞；
+# 但打字、被拖动、双击记笔记时照常有动作，做完再站回去
+resting = False
+
+def calm():
+    """暂停中、而且现在没有需要动起来的事"""
+    if mode in ('steady', 'showtime'):
+        return not (keyboard_typing() and time.monotonic() > typing_ignore_until)
+    return mode == 'pomo'
+
+def rest():
+    global mode
+    if mode == 'showtime':
+        mode = 'steady'
+    still = pomo.current_art() if mode == 'pomo' else 'idle'
+    if anim != still or frame != 0:
+        play(still)
+
 # 主循环：检测鼠标、推进动画帧、走路
 def update():
     global mode, last_mouse, last_move, frame, frame_time, loops_left, walk_vec, ticks
     pomo.tick()
     alarm.tick()
     audio.tick()
-    if paused or not window.isVisible():
-        AppHelper.callLater(idle_tick, update)  # 看不到变化时降低频率，几乎不占 CPU
+    global resting
+    resting = not window.isVisible() or (paused and calm())
+    if resting:
+        if paused and window.isVisible():
+            rest()  # 暂停：站着不动
+        AppHelper.callLater(idle_tick, update)  # 看不到变化 / 暂停时降低频率，几乎不占 CPU
         return
     AppHelper.callLater(tick, update)
     ticks += 1
@@ -349,13 +373,13 @@ def update():
     if mouse.x != last_mouse.x or mouse.y != last_mouse.y:
         last_mouse = mouse
         last_move = time.monotonic()
-        if mode == 'steady' and anim != 'change':
+        if mode == 'steady' and anim != 'change' and not paused:
             mode = 'showtime'
             play('change')  # 鼠标动了：立刻闪光登场
     elif mode == 'showtime' and anim == 'dance' and not cursor_moving():
         next_anim()  # 鼠标停了：结束跳舞
 
-    if anim == 'walk' and mode == 'steady' and task_box is None:  # 输入任务名时不自己走开
+    if anim == 'walk' and mode == 'steady' and task_box is None and not paused:  # 输入任务名时不自己走开
         dx, dy = walk_vec
         x, y = clamp_origin(pos[0] + dx, pos[1] + dy, screen_area())
         # 碰到屏幕边缘就反弹
@@ -392,7 +416,7 @@ def update():
         raise
     finally:
         visible = window.isVisible()
-        runtime_log.step(time.perf_counter() - t, idle_tick if paused or not visible else tick,
+        runtime_log.step(time.perf_counter() - t, idle_tick if resting else tick,
                          mode, anim, visible, paused)
 
 # 可拖动、可双击的桌宠视图
