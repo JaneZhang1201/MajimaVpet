@@ -1,0 +1,58 @@
+MajimaVpet
+==========
+
+A tiny pixel-art Majima that lives on your desktop. He idles and wanders,
+dances when you move the mouse, types along with you, keeps a notebook
+and runs a Pomodoro timer.
+
+This is an unofficial fan work. It is not affiliated with or endorsed by SEGA.
+Majima and the Like a Dragon / Yakuza series belong to SEGA. Free; not for sale.
+
+
+Opening it the first time
+-------------------------
+The app is not signed, so your computer will warn you once.
+
+Windows:  run MajimaVpet.exe. If "Windows protected your PC" appears,
+          click "More info", then "Run anyway".
+          Majima's menu is the small icon in the bottom-right corner of the
+          taskbar (click ^ if it is hidden; you can drag it out to keep it visible).
+
+macOS:    move MajimaVpet.app to Applications, then open it. If macOS says it
+          cannot be opened, go to System Settings > Privacy & Security, scroll
+          down and click "Open Anyway". Majima's menu is the small icon in the
+          menu bar.
+
+
+Privacy
+-------
+Majima works completely offline. Your notes and Pomodoro history stay on
+your computer. To notice when you are typing, he only records *when* a key
+was last pressed, never which key.
+
+
+Your notes are kept here (they survive updates and reinstalls)
+--------------------------------------------------------------
+Windows:  %APPDATA%\MajimaVpet
+macOS:    ~/Library/Application Support/MajimaVpet
+
+
+Updating
+--------
+Download the new version and replace the old app.
+
+
+Uninstalling
+------------
+Quit Majima from his menu, then delete the app (Windows: the MajimaVpet folder).
+To also erase your notes, delete the folder listed above.
+
+
+Credits and licences
+--------------------
+Silkscreen font, Copyright 2001 The Silkscreen Project Authors, SIL Open Font License 1.1 (see fonts/OFL.txt).
+Windows version: Qt for Python (PySide6), LGPL v3 - https://www.qt.io/qt-licensing
+  The Qt libraries are included as separate files in this folder and may be
+  replaced with your own build of the same version.
+macOS version: PyObjC, MIT License.
+Python, Python Software Foundation License.

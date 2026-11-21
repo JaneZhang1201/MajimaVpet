@@ -1,14 +1,19 @@
 """Majima 的本地数据库：一个 SQLite 文件，各功能用各自的表（只存在本机，不进 git 仓库）
 
-位置：~/Library/Application Support/MajimaVpet/majima.db
+位置：macOS  ~/Library/Application Support/MajimaVpet/majima.db
+      Windows %APPDATA%/MajimaVpet/majima.db
   - 笔记本：notes / note_labels / notes_fts（见 notes_store.py）
   - 番茄钟：之后放在自己的表里（pomodoro_store.py）
 旧版本的文件叫 notes.db，第一次打开时会自动改名为 majima.db，内容不变。
 """
 import os
 import sqlite3
+import sys
 
-DATA_DIR = os.path.expanduser('~/Library/Application Support/MajimaVpet')
+if sys.platform == 'win32':
+    DATA_DIR = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~/AppData/Roaming'), 'MajimaVpet')
+else:
+    DATA_DIR = os.path.expanduser('~/Library/Application Support/MajimaVpet')
 DB_PATH = os.path.join(DATA_DIR, 'majima.db')
 OLD_DB_PATH = os.path.join(DATA_DIR, 'notes.db')
 

@@ -2,3 +2,5 @@
 program/venv/
 __pycache__/
 sounds/
+build/
+dist/

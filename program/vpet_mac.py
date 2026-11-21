@@ -32,7 +32,7 @@ import runtime_log
 #   typing      （打字）    typing         —— 键盘在使用时：头上冒出 "…" 对话框
 #   notes       （记笔记）  notetake       —— 双击 Majima：停下准备记笔记；再单击一下弹出输入框
 
-APP_VERSION = '1.0.0'
+from version import APP_VERSION
 packaged = bool(getattr(sys, 'frozen', False))  # 打包成独立 App（自带 Python）时为 True
 if packaged:  # GIF 和字体在 App 的 Contents/Resources 里
     impath = os.environ.get('RESOURCEPATH', os.path.dirname(os.path.abspath(__file__))) + '/'

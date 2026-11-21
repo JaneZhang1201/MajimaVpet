@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<!-- Download page for MajimaVpet. Upload this file together with majima-idle.gif.
+     Before publishing: replace every "TODO" (download links, Mac checksum, dates). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MajimaVpet: a tiny Majima for your desktop</title>
+<style>
+  body { font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1f1f33; background: #fffbe0;
+         max-width: 680px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { margin: 8px 0 0; font-size: 28px; }
+  h2 { margin-top: 36px; font-size: 20px; border-bottom: 2px solid #1f1f33; padding-bottom: 4px; }
+  .hero { display: flex; gap: 20px; align-items: center; }
+  .hero img { width: 120px; image-rendering: pixelated; }
+  .lead { margin: 4px 0 0; }
+  .downloads { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 20px; }
+  .dl { flex: 1 1 260px; background: #fff; border: 3px solid #1f1f33; padding: 14px 16px; }
+  .dl a.button { display: inline-block; margin: 6px 0; padding: 8px 14px; background: #1f1f33; color: #fff;
+                 text-decoration: none; font-weight: 600; }
+  .dl a.button:hover { background: #3b3b66; }
+  .small { font-size: 13px; color: #555; }
+  code { background: #f3edc4; padding: 1px 4px; word-break: break-all; }
+  ol li { margin-bottom: 4px; }
+  footer { margin-top: 48px; font-size: 13px; color: #555; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <img src="majima-idle.gif" alt="Pixel-art Majima standing">
+  <div>
+    <h1>MajimaVpet</h1>
+    <p class="lead">A tiny pixel-art Majima who lives on your desktop. He wanders when you're still, dances when
+      you move the mouse, types along with you, keeps a notebook and runs a Pomodoro timer.</p>
+  </div>
+</div>
+
+<div class="downloads">
+  <div class="dl">
+    <strong>Windows</strong> 10 / 11 (64-bit)<br>
+    <a class="button" href="TODO-link-to/MajimaVpet-1.0.0-windows.zip">Download for Windows</a><br>
+    <span class="small">Version 1.0.0 · 36 MB<br>
+      SHA-256: <code>e4d4a87364841523f3b1d0af0a765288784d4b50ea3ef76749c9a95c099d7dfd</code></span>
+  </div>
+  <div class="dl">
+    <strong>macOS</strong> (TODO: Apple Silicon / Intel)<br>
+    <a class="button" href="TODO-link-to/MajimaVpet-1.0.0-mac-arm64.zip">Download for Mac</a><br>
+    <span class="small">Version 1.0.0 · TODO MB<br>
+      SHA-256: <code>TODO</code></span>
+  </div>
+</div>
+
+<h2>Opening it the first time</h2>
+<p>Majima isn't signed by Apple or Microsoft (he's a free fan project), so your computer warns you once.</p>
+<p><strong>Windows</strong></p>
+<ol>
+  <li>Unzip the download and open the <em>MajimaVpet</em> folder.</li>
+  <li>Double-click <em>MajimaVpet.exe</em>.</li>
+  <li>If <em>Windows protected your PC</em> appears, click <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
+  <li>His menu is the small icon at the bottom right of the taskbar. If you can't see it, click <strong>^</strong>,
+    and drag the icon out to keep it visible.</li>
+</ol>
+<p><strong>Mac</strong></p>
+<ol>
+  <li>Unzip the download and move <em>MajimaVpet.app</em> to <em>Applications</em>.</li>
+  <li>Open it. If macOS says it can't be opened, click <strong>Done</strong>.</li>
+  <li>Open <strong>System Settings → Privacy &amp; Security</strong>, scroll down and click <strong>Open Anyway</strong>.</li>
+  <li>His menu is the small icon in the menu bar.</li>
+</ol>
+
+<h2>Privacy</h2>
+<p>Majima works completely offline. Your notes and Pomodoro history stay on your computer. To notice when
+  you're typing, he only records <em>when</em> a key was last pressed, never which key. This page has no
+  tracking either.</p>
+
+<h2>Update or uninstall</h2>
+<p><strong>Update:</strong> download the new version and replace the old one. Your notes are kept.</p>
+<p><strong>Uninstall:</strong> quit Majima from his menu and delete the app. To erase your notes too, delete
+  <code>%APPDATA%\MajimaVpet</code> (Windows) or <code>~/Library/Application Support/MajimaVpet</code> (Mac).</p>
+
+<h2>Check your download (optional)</h2>
+<p>Compare the SHA-256 above with what your computer reports:</p>
+<p>Windows (PowerShell): <code>Get-FileHash MajimaVpet-1.0.0-windows.zip</code><br>
+   Mac (Terminal): <code>shasum -a 256 MajimaVpet-1.0.0-mac-arm64.zip</code></p>
+
+<footer>
+  MajimaVpet is an unofficial, free fan work. It is not affiliated with or endorsed by SEGA.
+  Majima and the Like a Dragon / Yakuza series belong to SEGA.<br>
+  Pixel font: Silkscreen (SIL Open Font License). Windows version built with Qt for Python (LGPL v3).
+</footer>
+
+</body>
+</html>

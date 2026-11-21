@@ -1,6 +1,6 @@
-"""运行记录：在这台 Mac 上记录 Majima 运行得怎么样，供以后分析；完全离线，从菜单导出成一个 zip 文件手动发送
+"""运行记录：在这台电脑（Mac / Windows）上记录 Majima 运行得怎么样，供以后分析；完全离线，从菜单导出成一个 zip 文件手动发送
 
-记在 ~/Library/Application Support/MajimaVpet/runtime/：
+记在数据文件夹（见 majima_db.DATA_DIR）的 runtime/ 里：
   events-YYYY-MM-DD.csv  事件：启动 / 退出、番茄阶段、闹钟、声音、睡眠 / 醒来、卡顿、错误
   perf-YYYY-MM-DD.csv    每分钟一行：主循环耗时、卡顿次数、CPU、内存、空闲唤醒
   errors.log             程序出错时的报错信息（打包后的 App 才写这里）
@@ -14,14 +14,17 @@ import datetime
 import json
 import os
 import platform
-import resource
 import subprocess
 import sys
 import time
 import uuid
 import zipfile
 
-DIR = os.path.expanduser('~/Library/Application Support/MajimaVpet/runtime/')
+import majima_db
+
+WINDOWS = sys.platform == 'win32'
+
+DIR = os.path.join(majima_db.DATA_DIR, 'runtime', '')
 KEEP_DAYS = 60
 FREEZE_MS = 200      # 主循环一步超过这么久：记一次"卡顿"
 STALL_MS = 400       # 两步之间比预期多停了这么久（主线程被别的事占住）：记一次"停顿"
@@ -58,13 +61,41 @@ def event(name, **detail):
 
 # ---------------- 系统信息 ----------------
 def _sysctl(key):
+    if WINDOWS:
+        return ''
     try:
         return subprocess.run(['sysctl', '-n', key], capture_output=True, text=True, timeout=2).stdout.strip()
     except Exception:
         return ''
 
 
+def _windows_memory_gb():
+    class Status(ctypes.Structure):
+        _fields_ = [('length', ctypes.c_uint32), ('load', ctypes.c_uint32)] +                    [(n, ctypes.c_uint64) for n in ('total', 'avail', 'total_page', 'avail_page',
+                                                   'total_virtual', 'avail_virtual', 'avail_ext')]
+    st = Status()
+    st.length = ctypes.sizeof(Status)
+    try:
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
+    except Exception:
+        return 0
+    return round(st.total / 2 ** 30, 1)
+
+
 def system_info(app_version, screens=()):
+    if WINDOWS:
+        return {
+            'app_version': app_version,
+            'packaged': bool(getattr(sys, 'frozen', False)),
+            'windows': platform.version(),
+            'windows_release': platform.release(),
+            'arch': platform.machine(),
+            'cpu': platform.processor(),
+            'memory_gb': _windows_memory_gb(),
+            'python': platform.python_version(),
+            'screens': list(screens),
+            'audio_output': audio_output(),
+        }
     return {
         'app_version': app_version,
         'packaged': bool(getattr(sys, 'frozen', False)),
@@ -104,6 +135,8 @@ def _audio_u32(obj, selector):
 
 def audio_output():
     """当前默认声音输出的类型，比如 'bluetooth'"""
+    if _ca is None:
+        return 'unknown'
     try:
         device = _audio_u32(1, 'dOut')  # 1 = 整个系统
         if not device:
@@ -129,8 +162,31 @@ except OSError:
     _libproc = None
 
 
+class _MemCounters(ctypes.Structure):
+    _fields_ = [('cb', ctypes.c_uint32), ('page_faults', ctypes.c_uint32)] + [(n, ctypes.c_size_t) for n in (
+        'peak_working_set', 'working_set', 'quota_peak_paged', 'quota_paged', 'quota_peak_nonpaged',
+        'quota_nonpaged', 'pagefile', 'peak_pagefile', 'private')]
+
+
+def _rusage_windows():
+    """Windows：(私有内存, 工作集, 0)；没有"空闲唤醒"这个数"""
+    try:
+        c = _MemCounters()
+        c.cb = ctypes.sizeof(c)
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        if not ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.c_void_p(k32.GetCurrentProcess()),
+                                                        ctypes.byref(c), c.cb):
+            return None
+        return c.private, c.working_set, 0
+    except Exception:
+        return None
+
+
 def _rusage():
     """(物理内存 footprint, 常驻内存, 空闲唤醒次数)；拿不到时返回 None"""
+    if WINDOWS:
+        return _rusage_windows()
     if _libproc is None:
         return None
     r = _RusageV2()
@@ -140,8 +196,7 @@ def _rusage():
 
 
 def _cpu_seconds():
-    r = resource.getrusage(resource.RUSAGE_SELF)
-    return r.ru_utime + r.ru_stime
+    return time.process_time()  # 本进程用掉的 CPU 时间（用户 + 系统）
 
 
 # ---------------- 主循环统计 ----------------
@@ -215,7 +270,7 @@ def _flush(now, visible, paused):
 def start(app_version, screens=()):
     os.makedirs(DIR, exist_ok=True)
     _purge_old()
-    if getattr(sys, 'frozen', False):  # 打包后的 App 没有终端：报错写进 errors.log
+    if getattr(sys, 'frozen', False) or sys.stderr is None:  # 打包后的 App / pythonw 没有终端：报错写进 errors.log
         sys.stderr = open(DIR + 'errors.log', 'a', buffering=1)
         sys.stderr.write(f'\n--- {_now().isoformat(timespec="seconds")} session {session} ---\n')
     old_hook = sys.excepthook
@@ -248,15 +303,27 @@ def _purge_old():
 README = """MajimaVpet runtime data
 =======================
 This zip was made with Majima's menu: Export Runtime Data.
-It only contains how Majima ran on this Mac. There are no notes, task names, computer name,
+It only contains how Majima ran on this computer. There are no notes, task names, computer name,
 user name or device names.
 
 events-*.csv   launch / quit, Pomodoro stages, alarms, sounds (with the type of audio output),
-               Mac sleep / wake, freezes and errors
+               sleep / wake, freezes and errors
 perf-*.csv     one row per minute: loop timing, freezes, CPU %, memory, idle wakeups
 errors.log     error messages, if there were any
-system.json    macOS version, Mac model, chip, memory, screen sizes
+system.json    OS version, computer model, chip, memory, screen sizes
 """
+
+
+def desktop_dir():
+    """桌面文件夹（Windows 上可能被 OneDrive 挪走，所以问系统）"""
+    if WINDOWS:
+        try:
+            buf = ctypes.create_unicode_buffer(260)
+            if ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buf) == 0:  # CSIDL_DESKTOPDIRECTORY
+                return os.path.join(buf.value, '')
+        except Exception:
+            pass
+    return os.path.expanduser('~/Desktop/')
 
 
 def export(app_version, screens=()):
@@ -264,7 +331,7 @@ def export(app_version, screens=()):
     if _minute is not None:
         _flush(time.time(), True, False)
     event('export')
-    desktop = os.path.expanduser('~/Desktop/')
+    desktop = desktop_dir()
     path = f'{desktop}MajimaVpet-runtime-{_now():%Y%m%d-%H%M}.zip'
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
         for name in sorted(os.listdir(DIR)):

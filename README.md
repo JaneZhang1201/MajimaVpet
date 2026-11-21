@@ -1,6 +1,6 @@
 # MajimaVpet
 
-A tiny pixel-art Majima that lives on your macOS desktop. He idles and wanders when you're still, dances when you move the mouse, chats along while you type, and reacts when you pick him up.
+A tiny pixel-art Majima that lives on your macOS or Windows desktop. He idles and wanders when you're still, dances when you move the mouse, chats along while you type, and reacts when you pick him up.
 
 <p>
   <img src="majima-idle.gif" alt="idle" width="80">
@@ -39,7 +39,7 @@ The pet window floats above other windows and stays in the same spot on every de
 | Key / button | Result |
 |---|---|
 | **Enter** or **Save** | Saved to your notebook, with date and time. The page clears and stays open for the next entry |
-| **⌥↩** | New line (e.g. the word's meaning) |
+| **⌥↩** (Windows: **Shift+Enter**) | New line (e.g. the word's meaning) |
 | **Quick** | Sticky in the page's colour, on screen until you close it, not saved unless you click its **Save** |
 | **＋ Page** | Opens another page beside it, up to 3 |
 | **Esc** or ✕ | Closes the page (unsaved text is discarded) |
@@ -58,7 +58,7 @@ The pet window floats above other windows and stays in the same spot on every de
 
 ### Read your notes
 
-**Menu bar icon → Notebook…** (⌘B)
+**Menu bar icon → Notebook…** (⌘B; on Windows: tray icon → Notebook…, or double-click the tray icon)
 
 - Find text with search box
 - Label menu → `#label` → show only those notes
@@ -103,6 +103,7 @@ Each finished pomodoro is saved in `majima.db` with its task, so your focus hist
 
 - File → `~/Library/Application Support/MajimaVpet/majima.db` (only on your Mac, never uploaded)
 - Open the folder → Finder → **⇧⌘G** → paste `~/Library/Application Support/MajimaVpet` → Return
+- Windows → `%APPDATA%\MajimaVpet\majima.db` (paste `%APPDATA%\MajimaVpet` into File Explorer's address bar)
 
 ### Back up, restore, move
 
@@ -126,6 +127,38 @@ Click the little Majima icon in the menu bar:
 - **Quit MajimaVpet** (⌘Q)
 
 > On macOS 26+, if the icon doesn't appear, enable the app under **System Settings → Menu Bar → Allow in the Menu Bar**.
+
+## Windows
+
+The Windows version (`program/vpet_win.py`) does the same things with a few differences:
+
+| | macOS | Windows |
+|---|---|---|
+| Menu | Menu bar icon | Tray icon (bottom right; click or right-click). Double-click it to open the Notebook |
+| New line in a note | ⌥↩ | Shift+Enter (or Alt+Enter) |
+| Built-in alarm sounds | Glass, Hero, Tink, Funk | Windows Notify Calendar, Windows Notify Messaging, Windows Ding, tada (from `C:\Windows\Media`) |
+| Notes and settings | `~/Library/Application Support/MajimaVpet` | `%APPDATA%\MajimaVpet` |
+
+Typing is detected with a keyboard hook that only records *when* a key was last pressed, never which key.
+
+### Setup (Windows)
+
+Requires Windows 10/11 and Python 3.10+ (from python.org or `winget install Python.Python.3.13`).
+
+```powershell
+python -m venv program\venv
+program\venv\Scripts\pip install -r program\requirements.txt
+```
+
+### Run (Windows)
+
+Double-click `MajimaVpet.cmd`, or from a terminal (shows errors):
+
+```powershell
+program\venv\Scripts\python program\vpet_win.py
+```
+
+To start him when you log in: press **Win+R**, type `shell:startup`, and put a shortcut to `MajimaVpet.cmd` in that folder.
 
 ## Setup
 
@@ -170,7 +203,9 @@ Settings at the top of `program/vpet_mac.py`:
 
 ```
 MajimaVpet.app/        macOS launcher bundle (runs program/vpet_mac.py with the venv)
+MajimaVpet.cmd         Windows launcher (runs program/vpet_win.py with the venv, no console window)
 program/vpet_mac.py    the pet: Cocoa window, animation state machine, menu bar item, note box, Notebook window
+program/vpet_win.py    the same pet for Windows: Qt (PySide6) windows, tray icon, keyboard hook
 program/majima_db.py   shared local database (majima.db); each feature keeps its own tables
 program/notes_store.py notebook tables: notes, labels, full-text search
 program/pomodoro_store.py pomodoro history tables: tasks, pomodoros
